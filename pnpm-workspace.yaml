@@ -3,6 +3,12 @@ allowBuilds:
   '@parcel/watcher': true
   argon2: true
   esbuild: true
+overrides:
+  ansi-regex: 5.0.1
+  esbuild: 0.25.12
+  glob: 14.0.4
+  lodash: 4.18.1
+  minimatch: 11.0.5
 minimumReleaseAgeExclude:
   - '@typescript-eslint/eslint-plugin@8.72.2'
   - '@typescript-eslint/parser@8.72.2'

@@ -6,25 +6,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { HttpAdapterHost } from '@nestjs/core';
-
-interface ErrorBody {
-  statusCode: number;
-  error: string;
-  message: string | string[];
-  path: string;
-  timestamp: string;
-}
-
-const STATUS_ERROR_NAME: Record<number, string> = {
-  400: 'Bad Request',
-  401: 'Unauthorized',
-  403: 'Forbidden',
-  404: 'Not Found',
-  409: 'Conflict',
-  422: 'Unprocessable Entity',
-  429: 'Too Many Requests',
-  500: 'Internal Server Error',
-};
+import { ErrorBody, STATUS_ERROR_NAME } from '../errors';
 
 // multer 上传体积超限错误的鸭子类型判断（避免直接依赖 multer）
 function isMulterLimitError(exception: unknown): boolean {
