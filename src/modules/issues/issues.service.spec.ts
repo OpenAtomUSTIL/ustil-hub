@@ -1,7 +1,10 @@
-import { ForbiddenException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { Role } from '../../common/decorators/roles.decorator';
 import { IssueStatus } from '../../db/schema';
+import { AuditLogService } from '../audit/audit-log.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { TagsService } from '../tags/tags.service';
 import { UsersService } from '../users/users.service';
 import { IssueRow, IssuesRepository, ReplyRow } from './issues.repository';
 import { IssuesService } from './issues.service';
@@ -46,9 +49,29 @@ describe('IssuesService', () => {
     findReplies: jest.fn(),
     insertReply: jest.fn(),
     countReplies: jest.fn(),
+    findReplyById: jest.fn(),
+    softDeleteReply: jest.fn(),
+    restoreReply: jest.fn(),
+    listRepliesForAdmin: jest.fn(),
+    listDeletedReplies: jest.fn(),
   };
   const usersService = {
     getPublicByIds: jest.fn(),
+    searchIdsByKeyword: jest.fn(),
+  };
+  const tagsService = {
+    normalizeTags: jest.fn((tags?: string[]) => tags),
+    syncTags: jest.fn(),
+    cleanup: jest.fn(),
+    getNamesByTargets: jest.fn(),
+    findTargetIds: jest.fn(),
+  };
+  const notificationsService = {
+    notifyUser: jest.fn(),
+    notifyUsers: jest.fn(),
+  };
+  const auditLogService = {
+    record: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -58,6 +81,9 @@ describe('IssuesService', () => {
         IssuesService,
         { provide: IssuesRepository, useValue: issuesRepository },
         { provide: UsersService, useValue: usersService },
+        { provide: TagsService, useValue: tagsService },
+        { provide: NotificationsService, useValue: notificationsService },
+        { provide: AuditLogService, useValue: auditLogService },
       ],
     }).compile();
     service = moduleRef.get(IssuesService);
@@ -83,6 +109,7 @@ describe('IssuesService', () => {
         ],
       ]),
     );
+    tagsService.getNamesByTargets.mockResolvedValue(new Map());
   });
 
   it('创建 issue 默认 OPEN 并返回详情', async () => {
@@ -96,6 +123,49 @@ describe('IssuesService', () => {
     expect(result.status).toBe(IssueStatus.OPEN);
     expect(result.replies).toEqual([]);
     expect(result.replyCount).toBe(0);
+  });
+
+  it('创建 issue 写入标签与审计日志', async () => {
+    issuesRepository.insert.mockResolvedValue(issueRow());
+
+    await service.create(
+      { id: '01890a5d-ac96-7000-8000-000000000002', role: Role.MEMBER },
+      { title: '问题标题', content: '问题内容', tags: ['drizzle'] },
+    );
+
+    expect(tagsService.syncTags).toHaveBeenCalledWith('ISSUE', '01890a5d-ac96-7000-8000-0000000000e1', ['drizzle']);
+    expect(auditLogService.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'issue.create' }),
+    );
+  });
+
+  it('回复他人 issue 时通知楼主', async () => {
+    issuesRepository.findById.mockResolvedValue(issueRow());
+    issuesRepository.insertReply.mockResolvedValue(replyRow());
+
+    await service.reply(
+      '01890a5d-ac96-7000-8000-0000000000e1',
+      { id: '01890a5d-ac96-7000-8000-000000000001', role: Role.ALUMNI },
+      { content: '回复内容' },
+    );
+
+    expect(notificationsService.notifyUser).toHaveBeenCalledWith(
+      '01890a5d-ac96-7000-8000-000000000002',
+      expect.objectContaining({ type: 'ISSUE_REPLY', link: '/issues/01890a5d-ac96-7000-8000-0000000000e1' }),
+    );
+  });
+
+  it('自己回复自己不发通知', async () => {
+    issuesRepository.findById.mockResolvedValue(issueRow());
+    issuesRepository.insertReply.mockResolvedValue(replyRow({ authorId: '01890a5d-ac96-7000-8000-000000000002' }));
+
+    await service.reply(
+      '01890a5d-ac96-7000-8000-0000000000e1',
+      { id: '01890a5d-ac96-7000-8000-000000000002', role: Role.MEMBER },
+      { content: '自问自答' },
+    );
+
+    expect(notificationsService.notifyUser).not.toHaveBeenCalled();
   });
 
   it('VISITOR 创建 issue 返回 403', async () => {
@@ -135,6 +205,9 @@ describe('IssuesService', () => {
 
     expect(result.status).toBe(IssueStatus.ANSWERED);
     expect(issuesRepository.updateStatus).toHaveBeenCalled();
+    expect(auditLogService.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'issue.update', detail: { from: 'OPEN', to: 'ANSWERED' } }),
+    );
   });
 
   it('MEMBER 变更 issue 状态返回 403', async () => {
@@ -182,5 +255,103 @@ describe('IssuesService', () => {
     );
     expect(result.answeredBy?.id).toBe('01890a5d-ac96-7000-8000-000000000001');
     expect(result.status).toBe(IssueStatus.ANSWERED);
+  });
+
+  it('WHEEL 软删评论并写 comment.delete 审计（before 快照）', async () => {
+    issuesRepository.findReplyById.mockResolvedValue(replyRow());
+
+    await service.softDeleteReply('01890a5d-ac96-7000-8000-0000000000f1', {
+      id: 'wheel-1',
+      role: Role.WHEEL,
+    });
+
+    expect(issuesRepository.softDeleteReply).toHaveBeenCalledWith(
+      '01890a5d-ac96-7000-8000-0000000000f1',
+    );
+    expect(auditLogService.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'comment.delete',
+        targetType: 'COMMENT',
+        detail: { issueId: '01890a5d-ac96-7000-8000-0000000000e1', content: '回复内容' },
+      }),
+    );
+  });
+
+  it('软删已删除/不存在的评论返回 404', async () => {
+    issuesRepository.findReplyById.mockResolvedValue(null);
+    await expect(
+      service.softDeleteReply('01890a5d-ac96-7000-8000-0000000000f1', {
+        id: 'wheel-1',
+        role: Role.WHEEL,
+      }),
+    ).rejects.toThrow(NotFoundException);
+
+    issuesRepository.findReplyById.mockResolvedValue(replyRow({ deletedAt: now }));
+    await expect(
+      service.softDeleteReply('01890a5d-ac96-7000-8000-0000000000f1', {
+        id: 'wheel-1',
+        role: Role.WHEEL,
+      }),
+    ).rejects.toThrow(NotFoundException);
+    expect(issuesRepository.softDeleteReply).not.toHaveBeenCalled();
+  });
+
+  it('恢复评论：写 comment.restore 审计；重复恢复返回 409', async () => {
+    issuesRepository.findReplyById.mockResolvedValue(replyRow({ deletedAt: now }));
+
+    await service.restoreReply('01890a5d-ac96-7000-8000-0000000000f1', {
+      id: 'wheel-1',
+      role: Role.WHEEL,
+    });
+    expect(issuesRepository.restoreReply).toHaveBeenCalledWith(
+      '01890a5d-ac96-7000-8000-0000000000f1',
+    );
+    expect(auditLogService.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'comment.restore' }),
+    );
+
+    issuesRepository.findReplyById.mockResolvedValue(replyRow());
+    await expect(
+      service.restoreReply('01890a5d-ac96-7000-8000-0000000000f1', {
+        id: 'wheel-1',
+        role: Role.WHEEL,
+      }),
+    ).rejects.toThrow(ConflictException);
+    expect(issuesRepository.restoreReply).toHaveBeenCalledTimes(1);
+  });
+
+  it('评论管理列表：keyword 搜内容/作者，含 deletedAt', async () => {
+    usersService.searchIdsByKeyword.mockResolvedValue(['01890a5d-ac96-7000-8000-000000000001']);
+    issuesRepository.listRepliesForAdmin.mockResolvedValue({
+      rows: [
+        {
+          ...replyRow(),
+          issueTitle: '问题标题',
+          deletedAt: now,
+        },
+      ],
+      total: 1,
+    });
+
+    const result = await service.listRepliesForAdmin(
+      { page: 1, pageSize: 20, keyword: '回复' },
+      { id: 'wheel-1', role: Role.WHEEL },
+    );
+
+    expect(usersService.searchIdsByKeyword).toHaveBeenCalledWith('回复');
+    expect(issuesRepository.listRepliesForAdmin).toHaveBeenCalledWith(
+      expect.objectContaining({
+        keyword: '回复',
+        authorIds: ['01890a5d-ac96-7000-8000-000000000001'],
+      }),
+    );
+    expect(result.items[0]).toMatchObject({
+      id: '01890a5d-ac96-7000-8000-0000000000f1',
+      issueId: '01890a5d-ac96-7000-8000-0000000000e1',
+      issueTitle: '问题标题',
+      authorName: '答疑者',
+      content: '回复内容',
+      deletedAt: now.toISOString(),
+    });
   });
 });

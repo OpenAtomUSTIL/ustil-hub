@@ -29,6 +29,7 @@ export interface UserAuthRecord {
   avatarUrl: string | null;
   role: Role;
   status: UserStatus;
+  sessionVersion: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -37,6 +38,8 @@ export interface AuthUser {
   id: string;
   role: Role;
   status: UserStatus;
+  sessionVersion: number;
+  email: string | null;
 }
 
 /** 管理后台用户视图（联系方式脱敏） */
@@ -54,4 +57,27 @@ export interface AdminUserPage {
   total: number;
   page: number;
   pageSize: number;
+}
+
+export interface OnlineUserItem {
+  userId: string;
+  email: string | null;
+  nickname: string;
+  role: Role;
+  lastSeenAt: string;
+}
+
+export interface OnlineUsersView {
+  minutes: number;
+  total: number;
+  items: OnlineUserItem[];
+}
+
+/** 头像文件引用（管理端文件管理用） */
+export interface AvatarFileRef {
+  userId: string;
+  email: string | null;
+  nickname: string;
+  key: string;
+  updatedAt: Date;
 }

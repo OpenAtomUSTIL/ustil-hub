@@ -22,6 +22,62 @@
       "when": 1794359342133,
       "tag": "0002_woozy_karen_page",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794369998890,
+      "tag": "0003_add_user_session_version",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794387720790,
+      "tag": "0004_add_tags_and_taggings",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794387729886,
+      "tag": "0005_add_announcements",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794387730379,
+      "tag": "0006_add_notifications",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1794387743416,
+      "tag": "0007_add_resources",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1794387743912,
+      "tag": "0008_add_request_and_audit_logs",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1794387759777,
+      "tag": "0009_add_users_admin_role_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1794392138441,
+      "tag": "0010_add_login_logs_presence_soft_delete",
+      "breakpoints": true
     }
   ]
 }

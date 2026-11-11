@@ -26,3 +26,16 @@ export interface AssignmentItem {
   createdAt: string;
   updatedAt: string;
 }
+
+export interface MySubmissionItem {
+  id: string;
+  assignmentId: string;
+  assignmentTitle: string;
+  startAt: string;
+  deadlineAt: string;
+  state: AssignmentState;
+  note: string | null;
+  attachment: { id: string; fileName: string } | null;
+  createdAt: string;
+  updatedAt: string;
+}

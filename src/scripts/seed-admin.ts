@@ -55,6 +55,15 @@ async function main(): Promise<void> {
     return;
   }
 
+  // ADMIN 全局唯一：已存在 ADMIN 但邮箱不同 → 报错退出
+  const existingAdmin = await db.query.users.findFirst({ where: eq(users.role, 'ADMIN') });
+  if (existingAdmin) {
+    console.error(
+      `[seed-admin] 失败：已存在 ADMIN 账号（${existingAdmin.email ?? existingAdmin.id}），与 ADMIN_EMAIL 不一致`,
+    );
+    process.exit(1);
+  }
+
   const passwordHash = await hashPassword(password);
   const [row] = await db
     .insert(users)

@@ -72,11 +72,11 @@ describe('JwtAuthGuard / RolesGuard（e2e 冒烟）', () => {
 
   const usersById: Record<
     string,
-    { id: string; role: Role; status: UserStatus }
+    { id: string; role: Role; status: UserStatus; sessionVersion: number }
   > = {
-    'user-member': { id: 'user-member', role: Role.MEMBER, status: UserStatus.ACTIVE },
-    'user-admin': { id: 'user-admin', role: Role.ADMIN, status: UserStatus.ACTIVE },
-    'user-banned': { id: 'user-banned', role: Role.MEMBER, status: UserStatus.BANNED },
+    'user-member': { id: 'user-member', role: Role.MEMBER, status: UserStatus.ACTIVE, sessionVersion: 0 },
+    'user-admin': { id: 'user-admin', role: Role.ADMIN, status: UserStatus.ACTIVE, sessionVersion: 0 },
+    'user-banned': { id: 'user-banned', role: Role.MEMBER, status: UserStatus.BANNED, sessionVersion: 0 },
   };
 
   const usersService = {
@@ -88,7 +88,7 @@ describe('JwtAuthGuard / RolesGuard（e2e 冒烟）', () => {
 
   const tokenFor = (userId: string): string =>
     jwtService.sign(
-      { sub: userId, role: usersById[userId].role },
+      { sub: userId, role: usersById[userId].role, sessionVersion: 0 },
       { secret: testConfig.jwtAccessSecret, expiresIn: 60 },
     );
 

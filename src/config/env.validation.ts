@@ -27,10 +27,8 @@ export const envValidationSchema = Joi.object({
     is: 'r2',
     then: Joi.string().required(),
   }),
-  R2_PUBLIC_BASE_URL: Joi.string().allow('').when('STORAGE_DRIVER', {
-    is: 'r2',
-    then: Joi.string().required(),
-  }),
+  // 兼容旧配置；文件一律经鉴权 API 读取，不再需要公开 bucket URL。
+  R2_PUBLIC_BASE_URL: Joi.string().allow('').optional(),
   UPLOAD_MAX_SIZE: Joi.number().integer().positive().default(10485760),
   ADMIN_EMAIL: Joi.string().allow('').optional(),
   ADMIN_PASSWORD: Joi.string().allow('').optional(),

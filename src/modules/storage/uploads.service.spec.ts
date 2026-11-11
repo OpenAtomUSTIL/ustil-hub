@@ -84,7 +84,7 @@ describe('UploadsService', () => {
     );
 
     expect(result.originalName).toBe('work.pdf');
-    expect(result.url).toBe(`/api/v1/storage/files/${result.key}`);
+    expect(result.url).toBe(`/api/v1/assignments/files/${result.id}`);
     expect(storage.put).toHaveBeenCalledWith(
       result.key,
       expect.any(Buffer),

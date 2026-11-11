@@ -7,11 +7,16 @@ import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
 import { AdminModule } from './modules/admin/admin.module';
+import { AnnouncementsModule } from './modules/announcements/announcements.module';
 import { ArticlesModule } from './modules/articles/articles.module';
 import { AssignmentsModule } from './modules/assignments/assignments.module';
+import { AuditModule } from './modules/audit/audit.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { IssuesModule } from './modules/issues/issues.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
+import { ResourcesModule } from './modules/resources/resources.module';
 import { StorageModule } from './modules/storage/storage.module';
+import { TagsModule } from './modules/tags/tags.module';
 import { UsersModule } from './modules/users/users.module';
 
 @Module({
@@ -29,6 +34,11 @@ import { UsersModule } from './modules/users/users.module';
     ArticlesModule,
     AssignmentsModule,
     IssuesModule,
+    TagsModule,
+    NotificationsModule,
+    AnnouncementsModule,
+    ResourcesModule,
+    AuditModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionsFilter },

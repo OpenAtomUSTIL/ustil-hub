@@ -41,4 +41,14 @@ export class LocalStorageService implements FileStorage {
       throw new NotFoundException('文件不存在');
     }
   }
+
+  async stat(key: string): Promise<number | null> {
+    const target = this.resolve(key);
+    try {
+      const info = await fs.stat(target);
+      return info.isFile() ? info.size : null;
+    } catch {
+      return null;
+    }
+  }
 }

@@ -1,6 +1,11 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomBytes } from 'crypto';
+import { CurrentAuthUser } from '../../common/decorators/current-user.decorator';
+import { Role } from '../../common/decorators/roles.decorator';
+import { requireRole } from '../../common/permissions';
+import { isISO8601 } from 'class-validator';
 import { InviteCodeStatus } from '../../db/schema';
+import { AuditLogService } from '../audit/audit-log.service';
 import { GenerateInviteCodesDto } from './dto/generate-invite-codes.dto';
 import { ListInviteCodesDto } from './dto/list-invite-codes.dto';
 import { InviteCodesRepository, InviteCodeRow } from './invite-codes.repository';
@@ -26,7 +31,10 @@ function generateCode(): string {
 
 @Injectable()
 export class InviteCodesService {
-  constructor(private readonly inviteCodesRepository: InviteCodesRepository) {}
+  constructor(
+    private readonly inviteCodesRepository: InviteCodesRepository,
+    private readonly auditLogService: AuditLogService,
+  ) {}
 
   private toView(row: InviteCodeRow): InviteCodeView {
     return {
@@ -42,9 +50,13 @@ export class InviteCodesService {
   }
 
   async generate(
-    actorId: string,
+    actor: CurrentAuthUser,
     dto: GenerateInviteCodesDto,
   ): Promise<{ items: InviteCodeView[] }> {
+    requireRole(actor, Role.WHEEL, Role.ADMIN);
+    if (dto.expiresAt !== undefined && (!isISO8601(dto.expiresAt, { strict: true, strictSeparator: true }) || !dto.expiresAt.endsWith('Z'))) {
+      throw new BadRequestException('expiresAt 必须是合法的 ISO 8601 UTC 时间');
+    }
     const expiresAt = dto.expiresAt ? new Date(dto.expiresAt) : null;
     for (let attempt = 0; attempt < 3; attempt++) {
       const codes = new Set<string>();
@@ -56,10 +68,17 @@ export class InviteCodesService {
           [...codes].map((code) => ({
             code,
             maxUses: dto.maxUses,
-            createdById: actorId,
+            createdById: actor.id,
             expiresAt,
           })),
         );
+        await this.auditLogService.record({
+          actor,
+          action: 'invite.create',
+          targetType: 'INVITE_CODE',
+          targetId: null,
+          detail: { count: dto.count, maxUses: dto.maxUses },
+        });
         return { items: rows.map((row) => this.toView(row)) };
       } catch (error) {
         // 码碰撞（概率极低）：整批重试
@@ -71,7 +90,8 @@ export class InviteCodesService {
     throw new ConflictException('邀请码生成失败，请重试');
   }
 
-  async list(dto: ListInviteCodesDto): Promise<InviteCodePage> {
+  async list(dto: ListInviteCodesDto, actor: CurrentAuthUser): Promise<InviteCodePage> {
+    requireRole(actor, Role.WHEEL, Role.ADMIN);
     const { rows, total } = await this.inviteCodesRepository.list({
       status: dto.status as InviteCodeStatus | undefined,
       page: dto.page,
@@ -85,11 +105,19 @@ export class InviteCodesService {
     };
   }
 
-  async revoke(id: string): Promise<void> {
+  async revoke(id: string, actor: CurrentAuthUser): Promise<void> {
+    requireRole(actor, Role.WHEEL, Role.ADMIN);
     const row = await this.inviteCodesRepository.revoke(id);
     if (!row) {
       throw new NotFoundException('邀请码不存在');
     }
+    await this.auditLogService.record({
+      actor,
+      action: 'invite.revoke',
+      targetType: 'INVITE_CODE',
+      targetId: id,
+      detail: { code: row.code },
+    });
   }
 
   /** 注册核销：有效则原子 +1 并返回码 id；无效/作废/过期/用尽统一 409 */

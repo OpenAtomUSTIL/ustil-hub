@@ -46,14 +46,14 @@ export class UsersController {
 
   @Post(':id/ban')
   @Roles(Role.ADMIN)
-  ban(@Param('id', uuidParamPipe) id: string) {
-    return this.usersService.ban(id);
+  ban(@Param('id', uuidParamPipe) id: string, @CurrentUser() user: CurrentAuthUser) {
+    return this.usersService.ban(id, user);
   }
 
   @Post(':id/unban')
   @Roles(Role.ADMIN)
-  unban(@Param('id', uuidParamPipe) id: string) {
-    return this.usersService.unban(id);
+  unban(@Param('id', uuidParamPipe) id: string, @CurrentUser() user: CurrentAuthUser) {
+    return this.usersService.unban(id, user);
   }
 
   @Get(':id')

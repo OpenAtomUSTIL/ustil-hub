@@ -11,6 +11,9 @@ overrides:
   lodash: 4.18.1
   minimatch: 11.0.5
 
+patchedDependencies:
+  deepmerge@4.3.1: 207ffbbc4badf5d62821e48f2c7b552260b0435fe878ccdf25c454104412626a
+
 importers:
 
   .:
@@ -5538,7 +5541,7 @@ snapshots:
 
   deep-is@0.1.4: {}
 
-  deepmerge@4.3.1: {}
+  deepmerge@4.3.1(patch_hash=207ffbbc4badf5d62821e48f2c7b552260b0435fe878ccdf25c454104412626a): {}
 
   defaults@1.0.4:
     dependencies:
@@ -5861,7 +5864,7 @@ snapshots:
       chalk: 4.1.2
       chokidar: 4.0.3
       cosmiconfig: 8.3.6(typescript@5.9.3)
-      deepmerge: 4.3.1
+      deepmerge: 4.3.1(patch_hash=207ffbbc4badf5d62821e48f2c7b552260b0435fe878ccdf25c454104412626a)
       fs-extra: 10.1.0
       memfs: 3.5.3
       minimatch: 11.0.5
@@ -6143,7 +6146,7 @@ snapshots:
       babel-jest: 30.5.2(@babel/core@7.29.13)
       chalk: 4.1.2
       ci-info: 4.4.0
-      deepmerge: 4.3.1
+      deepmerge: 4.3.1(patch_hash=207ffbbc4badf5d62821e48f2c7b552260b0435fe878ccdf25c454104412626a)
       glob: 14.0.4
       graceful-fs: 4.2.11
       jest-circus: 30.5.2

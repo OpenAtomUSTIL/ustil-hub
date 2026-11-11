@@ -17,6 +17,7 @@ import { ACCESS_TOKEN_COOKIE } from '../cookies';
 interface AccessTokenPayload {
   sub: string;
   role: Role;
+  sessionVersion: number;
 }
 
 @Injectable()
@@ -36,6 +37,9 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
 
   // validate 时从 DB 取用户，保证封禁即时生效
   async validate(payload: AccessTokenPayload): Promise<CurrentAuthUser> {
+    if (!payload || typeof payload.sub !== 'string' || !Number.isInteger(payload.sessionVersion)) {
+      throw new UnauthorizedException('未登录或登录已过期');
+    }
     const user = await this.usersService.getAuthUser(payload.sub);
     if (!user) {
       throw new UnauthorizedException('未登录或登录已过期');
@@ -43,6 +47,9 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     if (user.status === UserStatus.BANNED) {
       throw new ForbiddenException('账号已被封禁');
     }
-    return { id: user.id, role: user.role };
+    if (payload.sessionVersion !== user.sessionVersion || payload.role !== user.role) {
+      throw new UnauthorizedException('登录状态已失效，请重新登录');
+    }
+    return { id: user.id, role: user.role, email: user.email };
   }
 }

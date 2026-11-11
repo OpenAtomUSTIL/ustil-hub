@@ -1,3 +1,5 @@
+import { CurrentAuthUser } from '../../common/decorators/current-user.decorator';
+import { requireRole } from '../../common/permissions';
 import { Injectable } from '@nestjs/common';
 import { Role } from '../../common/decorators/roles.decorator';
 import { InviteCodesRepository } from './invite-codes.repository';
@@ -16,7 +18,8 @@ export class StatsService {
     private readonly inviteCodesRepository: InviteCodesRepository,
   ) {}
 
-  async getStats(): Promise<AdminStatsView> {
+  async getStats(actor: CurrentAuthUser): Promise<AdminStatsView> {
+    requireRole(actor, Role.WHEEL, Role.ADMIN);
     const now = new Date();
     const users = await this.usersService.countByRole();
     // VISITOR 待清理：创建已满 7 天仍为 VISITOR（每日 03:00 定时清理）

@@ -2,6 +2,9 @@ import { BadRequestException, ForbiddenException, Injectable, NotFoundException 
 import { Page } from '../../common/dto/page';
 import { CurrentAuthUser } from '../../common/decorators/current-user.decorator';
 import { Role } from '../../common/decorators/roles.decorator';
+import { requireRole } from '../../common/permissions';
+import { AuditLogService } from '../audit/audit-log.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { AttachmentView } from '../storage/storage.types';
 import { UploadedFileInput, UploadsService } from '../storage/uploads.service';
 import { UsersService } from '../users/users.service';
@@ -11,7 +14,12 @@ import {
   AssignmentsRepository,
   SubmissionRow,
 } from './assignments.repository';
-import { AssignmentItem, AssignmentState, SubmissionView } from './assignments.views';
+import {
+  AssignmentItem,
+  AssignmentState,
+  MySubmissionItem,
+  SubmissionView,
+} from './assignments.views';
 import { CreateAssignmentDto } from './dto/create-assignment.dto';
 import { SubmitSubmissionDto } from './dto/submit-submission.dto';
 import { UpdateAssignmentDto } from './dto/update-assignment.dto';
@@ -22,6 +30,8 @@ export class AssignmentsService {
     private readonly assignmentsRepository: AssignmentsRepository,
     private readonly usersService: UsersService,
     private readonly uploadsService: UploadsService,
+    private readonly notificationsService: NotificationsService,
+    private readonly auditLogService: AuditLogService,
   ) {}
 
   // 状态由时间派生，截止判断以服务端时间为准（AGENTS.md §13）
@@ -33,6 +43,11 @@ export class AssignmentsService {
       return 'CLOSED';
     }
     return 'OPEN';
+  }
+
+  /** 管理端文件删除前的占用检查：被作业提交引用的附件 id */
+  async listUsedAttachmentIds(attachmentIds: string[]): Promise<Set<string>> {
+    return this.assignmentsRepository.listUsedAttachmentIds(attachmentIds);
   }
 
   private toSubmissionView(row: SubmissionRow, submitter: UserPublic, attachment: AttachmentView): SubmissionView {
@@ -183,6 +198,20 @@ export class AssignmentsService {
       startAt: dto.startAt,
       deadlineAt: dto.deadlineAt,
     });
+    // 发布作业：通知 MEMBER+ALUMNI 全体
+    const memberIds = await this.usersService.listUserIdsByRoles([Role.MEMBER, Role.ALUMNI]);
+    await this.notificationsService.notifyUsers(memberIds, {
+      type: 'ASSIGNMENT',
+      title: row.title,
+      link: `/assignments/${row.id}`,
+    });
+    await this.auditLogService.record({
+      actor: user,
+      action: 'assignment.create',
+      targetType: 'ASSIGNMENT',
+      targetId: row.id,
+      detail: { title: row.title },
+    });
     return this.getDetail(row.id, user);
   }
 
@@ -191,6 +220,7 @@ export class AssignmentsService {
     user: CurrentAuthUser,
     dto: UpdateAssignmentDto,
   ): Promise<AssignmentItem> {
+    requireRole(user, Role.ALUMNI, Role.WHEEL, Role.ADMIN);
     const row = await this.requireAssignment(id);
     if (row.publisherId !== user.id && user.role !== Role.ADMIN) {
       throw new ForbiddenException('无权访问该资源');
@@ -211,6 +241,13 @@ export class AssignmentsService {
       ...(dto.description !== undefined ? { description: dto.description } : {}),
       ...(dto.startAt !== undefined ? { startAt: dto.startAt } : {}),
       ...(dto.deadlineAt !== undefined ? { deadlineAt: dto.deadlineAt } : {}),
+    });
+    await this.auditLogService.record({
+      actor: user,
+      action: 'assignment.update',
+      targetType: 'ASSIGNMENT',
+      targetId: id,
+      detail: { title: dto.title ?? row.title },
     });
     return this.getDetail(id, user);
   }
@@ -259,6 +296,7 @@ export class AssignmentsService {
     user: CurrentAuthUser,
     query: { page: number; pageSize: number },
   ): Promise<Page<SubmissionView>> {
+    requireRole(user, Role.ALUMNI, Role.WHEEL, Role.ADMIN);
     const row = await this.requireAssignment(id);
     if (row.publisherId !== user.id && user.role !== Role.ADMIN) {
       throw new ForbiddenException('无权访问该资源');
@@ -279,5 +317,60 @@ export class AssignmentsService {
       return this.toSubmissionView(s, submitter, attachment);
     });
     return { items, total, page: query.page, pageSize: query.pageSize };
+  }
+
+  // 我的提交：仅本人数据，任何角色不能查他人
+  async listMySubmissions(
+    user: CurrentAuthUser,
+    query: { page: number; pageSize: number },
+  ): Promise<Page<MySubmissionItem>> {
+    if (user.role === Role.VISITOR) {
+      throw new ForbiddenException('无权访问该资源');
+    }
+    const { rows, total } = await this.assignmentsRepository.listBySubmitter(
+      user.id,
+      query.page,
+      query.pageSize,
+    );
+    const assignmentRows = await this.assignmentsRepository.findByIds(
+      rows.map((row) => row.assignmentId),
+    );
+    const assignmentById = new Map(assignmentRows.map((row) => [row.id, row]));
+    const attachments = await this.uploadsService.getAttachmentViews(
+      rows.map((row) => row.attachmentId),
+    );
+    const now = new Date();
+    const items: MySubmissionItem[] = rows.map((row) => {
+      const assignment = assignmentById.get(row.assignmentId);
+      if (!assignment) {
+        throw new NotFoundException('作业不存在');
+      }
+      const attachment = attachments.get(row.attachmentId) ?? null;
+      return {
+        id: row.id,
+        assignmentId: row.assignmentId,
+        assignmentTitle: assignment.title,
+        startAt: assignment.startAt.toISOString(),
+        deadlineAt: assignment.deadlineAt.toISOString(),
+        state: this.deriveState(assignment.startAt, assignment.deadlineAt, now),
+        note: row.note,
+        attachment: attachment ? { id: attachment.id, fileName: attachment.originalName } : null,
+        createdAt: row.createdAt.toISOString(),
+        updatedAt: row.updatedAt.toISOString(),
+      };
+    });
+    return { items, total, page: query.page, pageSize: query.pageSize };
+  }
+
+  async downloadAttachment(attachmentId: string, user: CurrentAuthUser): Promise<{ data: Buffer; contentType: string }> {
+    if (user.role === Role.VISITOR) throw new ForbiddenException('无权访问该资源');
+    const submission = await this.assignmentsRepository.findSubmissionByAttachmentId(attachmentId);
+    if (!submission) throw new NotFoundException('提交记录不存在');
+    const assignment = await this.requireAssignment(submission.assignmentId);
+    const isPublisher = assignment.publisherId === user.id && (user.role === Role.ALUMNI || user.role === Role.WHEEL);
+    if (submission.submitterId !== user.id && !isPublisher && user.role !== Role.ADMIN) {
+      throw new ForbiddenException('无权访问该资源');
+    }
+    return this.uploadsService.readAttachment(attachmentId);
   }
 }

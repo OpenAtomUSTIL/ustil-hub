@@ -6,9 +6,12 @@ import {
   Patch,
   Post,
   Query,
+  Res,
+  StreamableFile,
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { CurrentAuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles, Role } from '../../common/decorators/roles.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
@@ -29,9 +32,28 @@ export class AssignmentsController {
     return this.assignmentsService.list(query, user);
   }
 
+  @Get('submissions/mine')
+  listMySubmissions(@Query() query: PaginationQueryDto, @CurrentUser() user: CurrentAuthUser) {
+    return this.assignmentsService.listMySubmissions(user, query);
+  }
+
   @Get(':id')
   detail(@Param('id', uuidParamPipe) id: string, @CurrentUser() user: CurrentAuthUser) {
     return this.assignmentsService.getDetail(id, user);
+  }
+
+  @Get('files/:attachmentId')
+  async downloadAttachment(
+    @Param('attachmentId', uuidParamPipe) attachmentId: string,
+    @CurrentUser() user: CurrentAuthUser,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<StreamableFile> {
+    const { data, contentType } = await this.assignmentsService.downloadAttachment(attachmentId, user);
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', 'attachment');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'private, no-store');
+    return new StreamableFile(data);
   }
 
   @Post()

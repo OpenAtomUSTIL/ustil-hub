@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
+import { IsInt, IsISO8601, ValidateIf, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
 
 export class GenerateInviteCodesDto {
   @Type(() => Number)
@@ -14,8 +14,9 @@ export class GenerateInviteCodesDto {
   @Max(100, { message: 'maxUses 不能超过 100' })
   maxUses: number = 1;
 
-  @IsOptional()
+  @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsString({ message: 'expiresAt 必须是字符串' })
+  @IsISO8601({ strict: true, strictSeparator: true }, { message: 'expiresAt 必须是合法日期' })
   @Matches(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/, {
     message: 'expiresAt 必须是 ISO 8601 UTC 字符串',
   })

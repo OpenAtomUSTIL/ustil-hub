@@ -3,10 +3,15 @@ import { Test } from '@nestjs/testing';
 import { Role } from '../../common/decorators/roles.decorator';
 import { REFRESH_TOKEN_STORE } from '../../db/redis';
 import { UserStatus } from '../../db/schema';
+import { AuditLogService } from '../audit/audit-log.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { TagsService } from '../tags/tags.service';
 import { UploadsService } from '../storage/uploads.service';
 import { hashPassword } from '../auth/password';
 import { UsersRepository, UserRow } from './users.repository';
 import { UsersService } from './users.service';
+
+const actor = { id: 'admin-actor', role: Role.ADMIN };
 
 const now = new Date('2026-01-01T00:00:00.000Z');
 
@@ -55,9 +60,19 @@ describe('UsersService', () => {
   };
   const refreshStore = {
     register: jest.fn(),
-    has: jest.fn(),
-    revoke: jest.fn(),
+    rotate: jest.fn(),
     revokeAll: jest.fn(),
+  };
+  const notificationsService = {
+    notifyUser: jest.fn(),
+    notifyUsers: jest.fn(),
+  };
+  const auditLogService = {
+    record: jest.fn(),
+  };
+  const tagsService = {
+    cleanupIssuesOfAuthor: jest.fn(),
+    cleanup: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -67,6 +82,9 @@ describe('UsersService', () => {
         UsersService,
         { provide: UsersRepository, useValue: usersRepository },
         { provide: UploadsService, useValue: uploadsService },
+        { provide: NotificationsService, useValue: notificationsService },
+        { provide: AuditLogService, useValue: auditLogService },
+        { provide: TagsService, useValue: tagsService },
         { provide: REFRESH_TOKEN_STORE, useValue: refreshStore },
       ],
     }).compile();
@@ -104,9 +122,10 @@ describe('UsersService', () => {
   });
 
   it('封禁：状态置为 BANNED 并吊销全部 refresh', async () => {
+    usersRepository.findById.mockResolvedValue(row());
     usersRepository.updateStatus.mockResolvedValue(row({ status: UserStatus.BANNED }));
 
-    const result = await service.ban('01890a5d-ac96-7000-8000-000000000001');
+    const result = await service.ban('01890a5d-ac96-7000-8000-000000000001', actor);
 
     expect(result.status).toBe(UserStatus.BANNED);
     expect(refreshStore.revokeAll).toHaveBeenCalledWith('01890a5d-ac96-7000-8000-000000000001');
@@ -116,7 +135,7 @@ describe('UsersService', () => {
     usersRepository.findById.mockResolvedValue(row());
     usersRepository.updateRole.mockResolvedValue(row({ role: Role.ALUMNI }));
 
-    const result = await service.updateRole('01890a5d-ac96-7000-8000-000000000001', Role.ALUMNI);
+    const result = await service.updateRole('01890a5d-ac96-7000-8000-000000000001', Role.ALUMNI, actor);
 
     expect(result.role).toBe(Role.ALUMNI);
     expect(result.contact).toBe('a***@example.com');
@@ -128,7 +147,7 @@ describe('UsersService', () => {
     usersRepository.findById.mockResolvedValue(row({ role: Role.ADMIN }));
 
     await expect(
-      service.updateRole('01890a5d-ac96-7000-8000-000000000001', Role.WHEEL),
+      service.updateRole('01890a5d-ac96-7000-8000-000000000001', Role.WHEEL, actor),
     ).rejects.toThrow(ForbiddenException);
     expect(usersRepository.updateRole).not.toHaveBeenCalled();
   });
@@ -137,12 +156,12 @@ describe('UsersService', () => {
     usersRepository.findById.mockResolvedValue(row());
     usersRepository.updateRole.mockResolvedValue(row({ role: Role.ALUMNI }));
 
-    const result = await service.promoteToAlumni('01890a5d-ac96-7000-8000-000000000001');
+    const result = await service.promoteToAlumni('01890a5d-ac96-7000-8000-000000000001', actor);
     expect(result.role).toBe(Role.ALUMNI);
 
     usersRepository.findById.mockResolvedValue(row({ role: Role.ALUMNI }));
     await expect(
-      service.promoteToAlumni('01890a5d-ac96-7000-8000-000000000001'),
+      service.promoteToAlumni('01890a5d-ac96-7000-8000-000000000001', actor),
     ).rejects.toThrow(ForbiddenException);
   });
 
@@ -150,13 +169,13 @@ describe('UsersService', () => {
     usersRepository.findById.mockResolvedValue(row({ role: Role.VISITOR }));
     usersRepository.deleteById.mockResolvedValue(row({ role: Role.VISITOR }));
 
-    await service.removeByAdmin('01890a5d-ac96-7000-8000-000000000001');
+    await service.removeByAdmin('01890a5d-ac96-7000-8000-000000000001', actor);
     expect(refreshStore.revokeAll).toHaveBeenCalledWith('01890a5d-ac96-7000-8000-000000000001');
     expect(usersRepository.deleteById).toHaveBeenCalled();
 
     usersRepository.findById.mockResolvedValue(row({ role: Role.ALUMNI }));
     await expect(
-      service.removeByAdmin('01890a5d-ac96-7000-8000-000000000001'),
+      service.removeByAdmin('01890a5d-ac96-7000-8000-000000000001', actor),
     ).rejects.toThrow(ForbiddenException);
     expect(usersRepository.deleteById).toHaveBeenCalledTimes(1);
   });
@@ -190,5 +209,51 @@ describe('UsersService', () => {
 
     expect(count).toBe(3);
     expect(usersRepository.promoteMembersCreatedBefore).toHaveBeenCalledWith(expect.any(Date));
+  });
+
+  it('ADMIN 换绑邮箱/手机返回 403', async () => {
+    usersRepository.findById.mockResolvedValue(row({ role: Role.ADMIN }));
+
+    await expect(
+      service.changeIdentifier('01890a5d-ac96-7000-8000-000000000001', {
+        type: 'email',
+        value: 'new@example.com',
+        password: 'password123',
+      }),
+    ).rejects.toThrow('管理员账号初始化后不可修改');
+    expect(usersRepository.updateIdentifier).not.toHaveBeenCalled();
+  });
+
+  it('改角色：通知目标用户并写审计', async () => {
+    usersRepository.findById.mockResolvedValue(row());
+    usersRepository.updateRole.mockResolvedValue(row({ role: Role.ALUMNI }));
+
+    await service.updateRole('01890a5d-ac96-7000-8000-000000000001', Role.ALUMNI, actor);
+
+    expect(notificationsService.notifyUser).toHaveBeenCalledWith(
+      '01890a5d-ac96-7000-8000-000000000001',
+      expect.objectContaining({
+        type: 'ROLE',
+        body: '你的角色已从 MEMBER 变更为 ALUMNI',
+      }),
+    );
+    expect(auditLogService.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'user.role.change',
+        detail: { from: Role.MEMBER, to: Role.ALUMNI },
+      }),
+    );
+  });
+
+  it('剔除：清理 issue taggings 并写审计', async () => {
+    usersRepository.findById.mockResolvedValue(row({ role: Role.VISITOR }));
+    usersRepository.deleteById.mockResolvedValue(row({ role: Role.VISITOR }));
+
+    await service.removeByAdmin('01890a5d-ac96-7000-8000-000000000001', actor);
+
+    expect(tagsService.cleanupIssuesOfAuthor).toHaveBeenCalledWith('01890a5d-ac96-7000-8000-000000000001');
+    expect(auditLogService.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'user.remove' }),
+    );
   });
 });

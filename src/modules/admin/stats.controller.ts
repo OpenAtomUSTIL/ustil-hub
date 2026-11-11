@@ -1,3 +1,4 @@
+import { CurrentAuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Controller, Get } from '@nestjs/common';
 import { Roles, Role } from '../../common/decorators/roles.decorator';
 import { StatsService } from './stats.service';
@@ -8,7 +9,7 @@ export class StatsController {
   constructor(private readonly statsService: StatsService) {}
 
   @Get()
-  getStats() {
-    return this.statsService.getStats();
+  getStats(@CurrentUser() user: CurrentAuthUser) {
+    return this.statsService.getStats(user);
   }
 }

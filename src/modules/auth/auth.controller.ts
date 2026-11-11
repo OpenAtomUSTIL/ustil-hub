@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   HttpCode,
   Inject,
   Ip,
@@ -63,9 +64,10 @@ export class AuthController {
   async login(
     @Body() dto: LoginDto,
     @Ip() ip: string,
+    @Headers('user-agent') userAgent: string | undefined,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { user, tokens } = await this.authService.login(dto, ip);
+    const { user, tokens } = await this.authService.login(dto, ip, userAgent);
     setAuthCookies(res, tokens, this.cookieFlags);
     return user;
   }
@@ -87,9 +89,11 @@ export class AuthController {
   @HttpCode(204)
   async logout(
     @Req() req: RequestWithCookies,
+    @Ip() ip: string,
+    @Headers('user-agent') userAgent: string | undefined,
     @Res({ passthrough: true }) res: Response,
   ): Promise<void> {
-    await this.authService.logout(req.cookies?.[REFRESH_TOKEN_COOKIE]);
+    await this.authService.logout(req.cookies?.[REFRESH_TOKEN_COOKIE], ip, userAgent);
     clearAuthCookies(res, this.cookieFlags);
   }
 

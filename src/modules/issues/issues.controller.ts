@@ -39,7 +39,7 @@ export class IssuesController {
   }
 
   @Patch(':id/status')
-  @Roles(Role.ADMIN, Role.ALUMNI)
+  @Roles(Role.ADMIN, Role.ALUMNI, Role.WHEEL)
   changeStatus(
     @Param('id', uuidParamPipe) id: string,
     @CurrentUser() user: CurrentAuthUser,

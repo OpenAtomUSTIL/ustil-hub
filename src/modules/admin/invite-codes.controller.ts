@@ -21,17 +21,17 @@ export class InviteCodesController {
 
   @Post()
   generate(@CurrentUser() user: CurrentAuthUser, @Body() dto: GenerateInviteCodesDto) {
-    return this.inviteCodesService.generate(user.id, dto);
+    return this.inviteCodesService.generate(user, dto);
   }
 
   @Get()
-  list(@Query() dto: ListInviteCodesDto) {
-    return this.inviteCodesService.list(dto);
+  list(@Query() dto: ListInviteCodesDto, @CurrentUser() user: CurrentAuthUser) {
+    return this.inviteCodesService.list(dto, user);
   }
 
   @Post(':id/revoke')
   @HttpCode(204)
-  revoke(@Param('id', uuidParamPipe) id: string): Promise<void> {
-    return this.inviteCodesService.revoke(id);
+  revoke(@Param('id', uuidParamPipe) id: string, @CurrentUser() user: CurrentAuthUser): Promise<void> {
+    return this.inviteCodesService.revoke(id, user);
   }
 }

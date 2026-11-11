@@ -15,6 +15,8 @@ import { Role } from '../src/common/decorators/roles.decorator';
 import { AppConfig, configuration } from '../src/config/configuration';
 import { REDIS_CLIENT, REFRESH_TOKEN_STORE } from '../src/db/redis';
 import { UserStatus } from '../src/db/schema';
+import { AuditLogService } from '../src/modules/audit/audit-log.service';
+import { LoginLogsService } from '../src/modules/audit/login-logs.service';
 import { InviteCodesRepository } from '../src/modules/admin/invite-codes.repository';
 import { InviteCodesService } from '../src/modules/admin/invite-codes.service';
 import { AuthController } from '../src/modules/auth/auth.controller';
@@ -73,8 +75,7 @@ describe('注册流程（邀请码分支 e2e）', () => {
   };
   const refreshStore = {
     register: jest.fn(),
-    has: jest.fn(),
-    revoke: jest.fn(),
+    rotate: jest.fn(),
     revokeAll: jest.fn(),
   };
 
@@ -113,6 +114,8 @@ describe('注册流程（邀请码分支 e2e）', () => {
         AuthService,
         InviteCodesService,
         { provide: InviteCodesRepository, useValue: inviteCodesRepository },
+        { provide: AuditLogService, useValue: { record: jest.fn() } },
+        { provide: LoginLogsService, useValue: { record: jest.fn() } },
         { provide: UsersService, useValue: usersService },
         { provide: JwtService, useValue: new JwtService({ secret: testConfig.jwtAccessSecret }) },
         { provide: REDIS_CLIENT, useValue: redis },
@@ -137,6 +140,7 @@ describe('注册流程（邀请码分支 e2e）', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    usersService.getAuthUser.mockResolvedValue({ id: selfFixture.id, role: selfFixture.role, status: UserStatus.ACTIVE, sessionVersion: 0 });
   });
 
   it('无码注册：创建 VISITOR 账号', async () => {

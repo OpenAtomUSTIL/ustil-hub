@@ -84,7 +84,7 @@ USTIL 官网/门户，本质是一个 **RBAC（基于角色的权限控制）系
 
 | 层 | 选型 | 说明 |
 |---|---|---|
-| 运行时 | Node.js 20 LTS | 见 `.nvmrc`，`MUST NOT` 升级 |
+| 运行时 | Node.js 24 LTS | 见 `.nvmrc`，`MUST NOT` 升级 |
 | 包管理器 | pnpm | `MUST NOT` 用 npm / yarn |
 | 框架 | NestJS（**CJS** + TS `strict: true`） | `MUST NOT` 切 ESM |
 | 数据库 | PostgreSQL | |
@@ -123,6 +123,12 @@ src/
     assignments/
     issues/
     storage/
+    admin/             # 邀请码 + 用户管理 + 统计（/admin/*，WHEEL,ADMIN）
+    audit/             # 请求日志拦截器 + 操作审计（request_logs / audit_logs）
+    announcements/     # 公告（可 notify 全员）
+    notifications/     # 站内通知
+    resources/         # 资源库（外链）
+    tags/              # 统一标签（taggings 覆盖 ARTICLE/ISSUE/RESOURCE）
   migrations/          # drizzle-kit 产出，必须提交到 git
 drizzle.config.ts
 .env.example
@@ -152,7 +158,7 @@ controller → service → repository(db)
 
 ### 迁移流程（唯一合法路径）
 1. 改 schema 文件
-2. `pnpm db:generate` 生成 SQL 到 `src/migrations/`
+2. `pnpm db:generate --name <功能名>` 生成 SQL 到 `src/migrations/`，使用英文 snake_case 描述具体变更（如 `add_user_session_version`），`MUST NOT` 使用默认随机名称。`meta/000N_snapshot.json` 保留 Drizzle 的编号约定。
 3. **人工 review 生成的 SQL**，确认没有 drop 数据
 4. 提交 SQL 与 schema 到同一个 commit
 5. 部署时由 CI 的**幂等 job** 执行 `pnpm db:migrate`
@@ -227,7 +233,8 @@ controller → service → repository(db)
 
 - `refresh_token` 的 `jti` `MUST` 存 Redis 白名单，key = `refresh:{userId}:{jti}`，TTL = 7d。
 - 刷新时**轮换**：旧 `jti` 立即删除，签发新的。检测到已删除的 `jti` 被复用 → 视为窃取，删除该用户全部 refresh 并强制重登。
-- 改密码 / 登出 / 封禁 → `MUST` 清除该用户全部 refresh 记录。
+- 改密码 / 登出 / 封禁 / 角色变更 → `MUST` 清除该用户全部 refresh 记录，并递增 `users.session_version`，使旧 access / refresh 同时失效。
+- access / refresh JWT 携带内部 `sessionVersion`；鉴权与刷新均与数据库版本比较，不通过业务响应暴露。
 - `MUST NOT` 把 token 放 localStorage（前端文件同样禁止）。
 
 ### 11.3 登录防护
@@ -250,6 +257,7 @@ interface StorageService {
   remove(key: string): Promise<void>;
 }
 ```
+- R2 bucket `MUST` 关闭公共访问，文件 URL 一律经受控 API；`MUST NOT` 返回绕过鉴权的公开对象 URL。
 - MVP 通过 `STORAGE_DRIVER=local | r2` 切换实现。业务代码 `MUST` 只依赖接口，`MUST NOT` 直接 import R2 SDK。
 - 未来接 B2 只新增一个实现类，`MUST NOT` 改业务代码。
 
@@ -337,5 +345,5 @@ pnpm db:migrate         # drizzle-kit migrate（部署 job / 本地手动）
 - 文章是否支持富文本 / Markdown 渲染（影响存储与 XSS 过滤）
 - 作业是否需要"评分"字段（当前只做提交，不做评分）
 - 邮件通知的发送时机与模板（后续阶段）
-- 软删除 vs 硬删除策略（当前默认硬删除，封禁用 `status` 字段）
+- ~~软删除 vs 硬删除策略（当前默认硬删除，封禁用 `status` 字段）~~ → **已拍板（2026-11-11）**：内容类（articles / announcements / resources / issue_replies）的业务 DELETE = 软删除（`deleted_at`），后台回收站可恢复（真回滚）；用户剔除仍为硬删 FK 级联；封禁继续用 `status` 字段。
 - 前端仓库最终位置（当前前端约定见 `web/AGENTS.md`，若改为 monorepo 需 `git mv`）

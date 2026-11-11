@@ -80,6 +80,24 @@ export class AssignmentsRepository {
     return rows[0] ?? null;
   }
 
+  async findSubmissionByAttachmentId(attachmentId: string): Promise<SubmissionRow | null> {
+    const rows = await db.select().from(assignmentSubmissions)
+      .where(eq(assignmentSubmissions.attachmentId, attachmentId)).limit(1);
+    return rows[0] ?? null;
+  }
+
+  // 管理端文件管理：批量查被作业提交占用的附件 id
+  async listUsedAttachmentIds(attachmentIds: string[]): Promise<Set<string>> {
+    if (attachmentIds.length === 0) {
+      return new Set();
+    }
+    const rows = await db
+      .select({ attachmentId: assignmentSubmissions.attachmentId })
+      .from(assignmentSubmissions)
+      .where(inArray(assignmentSubmissions.attachmentId, attachmentIds));
+    return new Set(rows.map((row) => row.attachmentId));
+  }
+
   // 重复提交：按 (assignment_id, submitter_id) 覆盖旧提交，保留 created_at、刷新 updated_at
   async upsertSubmission(row: {
     assignmentId: string;
@@ -120,5 +138,33 @@ export class AssignmentsRepository {
       .from(assignmentSubmissions)
       .where(where);
     return { rows, total: totalRows[0]?.count ?? 0 };
+  }
+
+  // 我的提交：仅本人数据，按 updatedAt 倒序
+  async listBySubmitter(
+    submitterId: string,
+    page: number,
+    pageSize: number,
+  ): Promise<{ rows: SubmissionRow[]; total: number }> {
+    const where = eq(assignmentSubmissions.submitterId, submitterId);
+    const rows = await db
+      .select()
+      .from(assignmentSubmissions)
+      .where(where)
+      .orderBy(desc(assignmentSubmissions.updatedAt))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize);
+    const totalRows = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(assignmentSubmissions)
+      .where(where);
+    return { rows, total: totalRows[0]?.count ?? 0 };
+  }
+
+  async findByIds(ids: string[]): Promise<AssignmentRow[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+    return db.select().from(assignments).where(inArray(assignments.id, ids));
   }
 }

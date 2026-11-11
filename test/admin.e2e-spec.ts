@@ -47,11 +47,11 @@ describe('管理后台接口（守卫 e2e 冒烟）', () => {
   let app: INestApplication;
   let jwtService: JwtService;
 
-  const usersById: Record<string, { id: string; role: Role; status: UserStatus }> = {
-    'user-visitor': { id: 'user-visitor', role: Role.VISITOR, status: UserStatus.ACTIVE },
-    'user-member': { id: 'user-member', role: Role.MEMBER, status: UserStatus.ACTIVE },
-    'user-wheel': { id: 'user-wheel', role: Role.WHEEL, status: UserStatus.ACTIVE },
-    'user-admin': { id: 'user-admin', role: Role.ADMIN, status: UserStatus.ACTIVE },
+  const usersById: Record<string, { id: string; role: Role; status: UserStatus; sessionVersion: number }> = {
+    'user-visitor': { id: 'user-visitor', role: Role.VISITOR, status: UserStatus.ACTIVE, sessionVersion: 0 },
+    'user-member': { id: 'user-member', role: Role.MEMBER, status: UserStatus.ACTIVE, sessionVersion: 0 },
+    'user-wheel': { id: 'user-wheel', role: Role.WHEEL, status: UserStatus.ACTIVE, sessionVersion: 0 },
+    'user-admin': { id: 'user-admin', role: Role.ADMIN, status: UserStatus.ACTIVE, sessionVersion: 0 },
   };
 
   const usersService = {
@@ -76,7 +76,7 @@ describe('管理后台接口（守卫 e2e 冒烟）', () => {
 
   const tokenFor = (userId: string): string =>
     jwtService.sign(
-      { sub: userId, role: usersById[userId].role },
+      { sub: userId, role: usersById[userId].role, sessionVersion: 0 },
       { secret: testConfig.jwtAccessSecret, expiresIn: 60 },
     );
 
@@ -161,7 +161,7 @@ describe('管理后台接口（守卫 e2e 冒烟）', () => {
       .set('Cookie', [`access_token=${tokenFor('user-admin')}`])
       .send({ role: 'WHEEL' })
       .expect(200);
-    expect(usersService.updateRole).toHaveBeenCalledWith('01890a5d-ac96-7000-8000-000000000009', 'WHEEL');
+    expect(usersService.updateRole).toHaveBeenCalledWith('01890a5d-ac96-7000-8000-000000000009', 'WHEEL', { id: 'user-admin', role: Role.ADMIN });
   });
 
   it('改角色不接受 ADMIN 取值', async () => {
