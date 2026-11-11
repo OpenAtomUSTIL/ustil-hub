@@ -21,7 +21,7 @@ export const issues = pgTable(
     content: text('content').notNull(),
     authorId: uuid('author_id')
       .notNull()
-      .references(() => users.id, { onDelete: 'restrict' }),
+      .references(() => users.id, { onDelete: 'cascade' }),
     status: issueStatusEnum('status').notNull().default('OPEN'),
     answeredBy: uuid('answered_by').references(() => users.id, { onDelete: 'set null' }),
     answeredAt: timestamp('answered_at', { withTimezone: true }),

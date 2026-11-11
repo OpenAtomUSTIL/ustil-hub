@@ -14,7 +14,7 @@ export const attachments = pgTable(
     mime: text('mime').notNull(),
     uploaderId: uuid('uploader_id')
       .notNull()
-      .references(() => users.id, { onDelete: 'restrict' }),
+      .references(() => users.id, { onDelete: 'cascade' }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

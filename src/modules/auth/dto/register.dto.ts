@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { IsEmailOrPhone } from './is-email-or-phone';
 
 export class RegisterDto {
@@ -14,4 +14,10 @@ export class RegisterDto {
   @IsNotEmpty({ message: '昵称不能为空' })
   @MaxLength(50, { message: '昵称不能超过 50 个字符' })
   nickname!: string;
+
+  // 邀请码：有效则注册为 MEMBER，无码注册为 VISITOR
+  @IsOptional()
+  @IsString({ message: '邀请码必须是字符串' })
+  @MaxLength(64, { message: '邀请码过长' })
+  inviteCode?: string;
 }

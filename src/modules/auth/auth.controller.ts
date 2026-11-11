@@ -22,6 +22,7 @@ import {
 } from './cookies';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { LoginDto } from './dto/login.dto';
+import { RedeemInviteCodeDto } from './dto/redeem-invite-code.dto';
 import { RegisterDto } from './dto/register.dto';
 
 @Controller('auth')
@@ -44,6 +45,17 @@ export class AuthController {
     const { user, tokens } = await this.authService.register(dto);
     setAuthCookies(res, tokens, this.cookieFlags);
     return user;
+  }
+
+  @Post('invite-code')
+  async redeemInviteCode(
+    @CurrentUser() user: CurrentAuthUser,
+    @Body() dto: RedeemInviteCodeDto,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const { user: updated, tokens } = await this.authService.redeemInviteCode(user.id, dto);
+    setAuthCookies(res, tokens, this.cookieFlags);
+    return updated;
   }
 
   @Public()

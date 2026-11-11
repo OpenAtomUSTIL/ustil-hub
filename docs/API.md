@@ -43,9 +43,11 @@
 
 | 枚举 | 中文 | 定位 |
 |---|---|---|
-| `ADMIN` | 管理员 | 全面管理：封禁、删他人内容 |
-| `ALUMNI` | 往届生 | 内容创作者：发文章、布置作业、答疑，无管理权 |
-| `MEMBER` | 普通成员 | 参与讨论、提交作业 |
+| `VISITOR` | 临时访客 | 非邀请码注册；7 天内未转正自动删除；可读文章、参与讨论（仅回复），禁止查阅作业 |
+| `MEMBER` | 学习成员 | 邀请码注册即入；发起讨论、提交作业；注册满 4 年自动升 `ALUMNI` |
+| `ALUMNI` | 校友 | 历届最终学员：发布文章、布置作业、答疑，无管理权 |
+| `WHEEL` | 负责人 | 生成/作废邀请码、剔除学员、提前提拔、变更 issue 状态 |
+| `ADMIN` | 管理员 | 公共账号：任免 `WHEEL`、封禁、删他人内容、最高权限 |
 
 ### 权限标注图例
 
@@ -65,7 +67,7 @@ UserPublic = {
   id: string;          // uuid v7
   nickname: string;
   avatarUrl: string | null;
-  role: 'ADMIN' | 'ALUMNI' | 'MEMBER';
+  role: 'VISITOR' | 'MEMBER' | 'ALUMNI' | 'WHEEL' | 'ADMIN';
 }
 
 // 本人资料（仅本人接口返回，含私有字段）
@@ -73,7 +75,7 @@ UserSelf = {
   id: string;
   nickname: string;
   avatarUrl: string | null;
-  role: 'ADMIN' | 'ALUMNI' | 'MEMBER';
+  role: 'VISITOR' | 'MEMBER' | 'ALUMNI' | 'WHEEL' | 'ADMIN';
   status: 'ACTIVE' | 'BANNED';
   email?: string;      // 绑定才返回
   phone?: string;      // 绑定才返回
@@ -104,11 +106,13 @@ AttachmentView = {
   {
     "identifier": "user@example.com 或 13800138000",  // 邮箱或手机号，二选一
     "password": "至少 8 位，最长 128 位",
-    "nickname": "昵称，最长 50 字符"
+    "nickname": "昵称，最长 50 字符",
+    "inviteCode": "可选，邀请码"
   }
   ```
+- 角色规则：携带有效邀请码（`ACTIVE`、未用尽、未过期）→ 注册为 `MEMBER` 并核销一人名额；无邀请码 → 注册为 `VISITOR`（7 天内未持码转正将被自动删除）
 - 成功：`201`，返回 `UserSelf`，并写入 `access_token` / `refresh_token` Cookie
-- 失败：`409` 邮箱/手机号已被注册；`400` 参数非法
+- 失败：`409` 邮箱/手机号已被注册，或邀请码无效/已作废/已过期/已被用尽（`message` 区分）；`400` 参数非法
 
 ### 1.2 登录 `POST /api/v1/auth/login`
 
@@ -148,6 +152,14 @@ AttachmentView = {
 
 - 权限：🔐 登录
 - 成功：`200`，返回 `UserSelf`
+
+### 1.7 持码转正 `POST /api/v1/auth/invite-code`
+
+- 权限：👤 仅 `VISITOR`（其他角色 403）
+- 请求体：`{ "inviteCode": "邀请码" }`
+- 说明：核销一人名额，`VISITOR` → `MEMBER`，旧 token 全部作废并换发双 token Cookie
+- 成功：`201`，返回 `UserSelf`，写入新双 token Cookie
+- 失败：`409` 邀请码无效/已作废/已过期/已被用尽；`403` 非 `VISITOR`
 
 ---
 
@@ -220,7 +232,7 @@ AttachmentView = {
 
 ### 3.3 创建文章 `POST /api/v1/articles`
 
-- 权限：🛡️ 仅 `ADMIN`、`ALUMNI`
+- 权限：🛡️ 仅 `ADMIN`、`ALUMNI`、`WHEEL`
 - 请求体：
   ```json
   { "title": "标题（≤200 字符）", "content": "正文" }
@@ -253,7 +265,7 @@ AttachmentView = {
 
 ### 4.1 作业列表 `GET /api/v1/assignments`
 
-- 权限：🔐 登录（所有角色可浏览）
+- 权限：🔐 登录（`VISITOR` 禁止查阅，403）
 - 查询参数：`page`、`pageSize`
 - 成功：`200`，返回 `Page<AssignmentItem>`
   ```ts
@@ -261,7 +273,7 @@ AttachmentView = {
     id, title, description,
     startAt, deadlineAt,
     state: 'NOT_STARTED' | 'OPEN' | 'CLOSED',
-    canSubmit: boolean,           // 仅 MEMBER 且状态为 OPEN 时为 true
+    canSubmit: boolean,           // 仅 MEMBER / ALUMNI 且状态为 OPEN 时为 true
     publisher: UserPublic,
     mySubmission: SubmissionView | null,   // 本人提交记录（无则 null）
     createdAt, updatedAt
@@ -270,12 +282,12 @@ AttachmentView = {
 
 ### 4.2 作业详情 `GET /api/v1/assignments/:id`
 
-- 权限：🔐 登录
+- 权限：🔐 登录（`VISITOR` 禁止查阅，403）
 - 成功：`200`，返回 `AssignmentItem`
 
 ### 4.3 发布作业 `POST /api/v1/assignments`
 
-- 权限：🛡️ 仅 `ADMIN`、`ALUMNI`
+- 权限：🛡️ 仅 `ADMIN`、`ALUMNI`、`WHEEL`
 - 请求体：
   ```json
   {
@@ -296,7 +308,7 @@ AttachmentView = {
 
 ### 4.5 提交作业 `POST /api/v1/assignments/:id/submissions`
 
-- 权限：👤 仅 `MEMBER` + ⏰ 处于可提交窗口（`OPEN`）
+- 权限：👤 仅 `MEMBER` / `ALUMNI` + ⏰ 处于可提交窗口（`OPEN`）
 - 请求体：`multipart/form-data`
   | 字段 | 类型 | 必填 | 说明 |
   |---|---|---|---|
@@ -313,7 +325,7 @@ AttachmentView = {
     createdAt, updatedAt
   }
   ```
-- 失败：`403` 非 MEMBER / 不在提交窗口；`400` 文件格式或大小不合规
+- 失败：`403` 非 `MEMBER`/`ALUMNI` 或不在提交窗口；`400` 文件格式或大小不合规
 
 ### 4.6 查看作业提交列表 `GET /api/v1/assignments/:id/submissions`
 
@@ -356,7 +368,7 @@ AttachmentView = {
 
 ### 5.3 创建 Issue `POST /api/v1/issues`
 
-- 权限：🔐 登录（所有角色）
+- 权限：🔐 登录（`VISITOR` 仅可回复、不可创建，403）
 - 请求体：`{ "title": "标题（≤200 字符）", "content": "内容" }`
 - 成功：`201`，返回 `IssueDetail`（状态 `OPEN`）
 
@@ -368,7 +380,7 @@ AttachmentView = {
 
 ### 5.5 变更 Issue 状态 `PATCH /api/v1/issues/:id/status`
 
-- 权限：🛡️ 仅 `ADMIN`、`ALUMNI`
+- 权限：🛡️ 仅 `ADMIN`、`ALUMNI`、`WHEEL`
 - 请求体：`{ "status": "OPEN | ANSWERED | ON_HOLD" }`
 - 成功：`200`，返回 `IssueDetail`
 
@@ -385,21 +397,112 @@ AttachmentView = {
 
 ---
 
+## 7. 管理后台 `/api/v1/admin`（`WHEEL` / `ADMIN`）
+
+### 7.1 批量生成邀请码 `POST /api/v1/admin/invite-codes`
+
+- 权限：🛡️ `WHEEL` / `ADMIN`
+- 请求体：
+  ```json
+  { "count": 5, "maxUses": 10, "expiresAt": "2027-01-01T00:00:00.000Z" }
+  ```
+  - `count` 生成码个数（1-50，默认 1）；`maxUses` 每码可用人数（1-100，默认 1）；`expiresAt` 可选过期时间（ISO 8601 UTC）
+- 成功：`201`，返回 `{ "items": [InviteCode] }`
+
+### 7.2 邀请码列表 `GET /api/v1/admin/invite-codes?status=&page=&pageSize=`
+
+- 权限：🛡️ `WHEEL` / `ADMIN`
+- `status` 可选：`ACTIVE` / `REVOKED`
+- 成功：`200`，返回分页 `{ items, total, page, pageSize }`
+
+### 7.3 作废邀请码 `POST /api/v1/admin/invite-codes/:id/revoke`
+
+- 权限：🛡️ `WHEEL` / `ADMIN`
+- 成功：`204`；失败：`404` 邀请码不存在
+
+```ts
+InviteCode = {
+  id: string;          // uuid v7
+  code: string;        // ≥8 位随机码
+  status: 'ACTIVE' | 'REVOKED';
+  maxUses: number;     // 单码可用人数上限
+  usedCount: number;   // 已核销人数
+  remaining: number;   // 剩余名额（maxUses - usedCount）
+  expiresAt: string | null;
+  createdAt: string;
+}
+```
+
+### 7.4 用户列表 `GET /api/v1/admin/users?keyword=&role=&status=&page=&pageSize=`
+
+- 权限：🛡️ `WHEEL` / `ADMIN`
+- `keyword` 匹配昵称/邮箱/手机号；`role`、`status` 可选筛选
+- 成功：`200`，返回分页 `{ items, total, page, pageSize }`
+  ```ts
+  AdminUser = {
+    id: string;
+    nickname: string;
+    contact: string | null;   // 脱敏联系方式（a***@example.com / 138****8000）
+    role: 'VISITOR' | 'MEMBER' | 'ALUMNI' | 'WHEEL' | 'ADMIN';
+    status: 'ACTIVE' | 'BANNED';
+    createdAt: string;
+  }
+  ```
+
+### 7.5 修改用户角色 `PATCH /api/v1/admin/users/:id/role`
+
+- 权限：🛡️ 仅 `ADMIN`
+- 请求体：`{ "role": "VISITOR | MEMBER | ALUMNI | WHEEL" }`（`MUST NOT` 传 `ADMIN`，400）
+- 成功：`200`，返回 `AdminUser`，并吊销该用户全部 refresh（强制重登）
+- 失败：`403` 目标是 `ADMIN` 账号；`404` 用户不存在
+
+### 7.6 提前提拔 `POST /api/v1/admin/users/:id/promote`
+
+- 权限：🛡️ `WHEEL` / `ADMIN`
+- 说明：`MEMBER` → `ALUMNI`，并强制重登
+- 成功：`201`，返回 `AdminUser`
+- 失败：`403` 目标不是 `MEMBER`；`404` 用户不存在
+
+### 7.7 剔除学员 `DELETE /api/v1/admin/users/:id`
+
+- 权限：🛡️ `WHEEL` / `ADMIN`
+- 说明：硬删 `MEMBER` / `VISITOR` 账号（级联其讨论/回复/作业提交/附件记录），并吊销其 refresh
+- 成功：`204`
+- 失败：`403` 目标是 `ALUMNI` 及以上；`404` 用户不存在
+
+### 7.8 概览统计 `GET /api/v1/admin/stats`
+
+- 权限：🛡️ `WHEEL` / `ADMIN`
+- 成功：`200`
+  ```json
+  {
+    "users": { "VISITOR": 0, "MEMBER": 0, "ALUMNI": 0, "WHEEL": 0, "ADMIN": 1 },
+    "activeInviteCodes": 0,
+    "visitorPendingCleanup": 0
+  }
+  ```
+  - `visitorPendingCleanup`：创建已满 7 天仍为 `VISITOR`（待定时清理）的人数
+
+---
+
 ## 附录：权限矩阵（速查）
 
-| 能力 | ADMIN | ALUMNI | MEMBER |
-|---|:---:|:---:|:---:|
-| 注册 / 登录 / 刷新 / 登出 | ✅ | ✅ | ✅ |
-| 改本人密码 / 资料 / 绑定 / 头像 | ✅ | ✅ | ✅ |
-| 查看他人公开资料 | ✅ | ✅ | ✅ |
-| 查看他人邮箱、手机号 | ❌ | ❌ | ❌ |
-| 浏览文章 / 作业 / issue | ✅ | ✅ | ✅ |
-| 创建文章 | ✅ | ✅ | ❌ |
-| 编辑文章 | 仅本人 | 仅本人 | ❌ |
-| 删除文章 | 任意 | 仅本人 | ❌ |
-| 发布 / 编辑作业 | ✅ / 任意 | ✅ / 仅本人 | ❌ |
-| 提交作业 | ❌ | ❌ | ✅（仅 OPEN 窗口） |
-| 查看作业提交列表 | ✅ | 仅本人发布的 | ❌ |
-| 创建 / 回复 issue | ✅ | ✅ | ✅ |
-| 变更 issue 状态 | ✅ | ✅ | ❌ |
-| 封禁 / 解封账号 | ✅ | ❌ | ❌ |
+| 能力 | VISITOR | MEMBER | ALUMNI | WHEEL | ADMIN |
+|---|:---:|:---:|:---:|:---:|:---:|
+| 注册 / 登录 / 刷新 / 登出 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 改本人密码 / 资料 / 绑定 / 头像 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 查看他人公开资料 | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 查看他人邮箱、手机号 | ❌ | ❌ | ❌ | ❌ | ❌ |
+| 浏览文章 / issue、回复 issue | ✅ | ✅ | ✅ | ✅ | ✅ |
+| 创建 issue / 变更 issue 状态 | ❌ | ✅ / ❌ | ✅ | ✅ | ✅ |
+| 浏览作业 | ❌ | ✅ | ✅ | ✅ | ✅ |
+| 创建文章 | ❌ | ❌ | ✅ | ✅ | ✅ |
+| 编辑文章 | ❌ | ❌ | 仅本人 | 仅本人 | 任意 |
+| 删除文章 | ❌ | ❌ | 仅本人 | 仅本人 | 任意 |
+| 发布 / 编辑作业 | ❌ | ❌ | ✅ / 仅本人 | ✅ / 仅本人 | ✅ / 任意 |
+| 提交作业 | ❌ | ✅（仅 OPEN 窗口） | ✅（仅 OPEN 窗口） | ❌ | ❌ |
+| 查看作业提交列表 | ❌ | ❌ | 仅本人发布的 | 仅本人发布的 | ✅ |
+| 生成 / 作废邀请码 | ❌ | ❌ | ❌ | ✅ | ✅ |
+| 剔除学员（删 MEMBER/VISITOR） | ❌ | ❌ | ❌ | ✅ | ✅ |
+| 提前提拔 MEMBER→ALUMNI | ❌ | ❌ | ❌ | ✅ | ✅ |
+| 改角色 / 封禁 / 解封账号 | ❌ | ❌ | ❌ | ❌ | ✅ |

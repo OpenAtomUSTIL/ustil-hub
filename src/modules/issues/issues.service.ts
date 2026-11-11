@@ -111,6 +111,9 @@ export class IssuesService {
   }
 
   async create(user: CurrentAuthUser, dto: CreateIssueDto): Promise<IssueDetail> {
+    if (user.role === Role.VISITOR) {
+      throw new ForbiddenException('无权访问该资源');
+    }
     const row = await this.issuesRepository.insert({
       title: dto.title,
       content: dto.content,
@@ -142,7 +145,7 @@ export class IssuesService {
     user: CurrentAuthUser,
     dto: ChangeIssueStatusDto,
   ): Promise<IssueDetail> {
-    if (user.role !== Role.ADMIN && user.role !== Role.ALUMNI) {
+    if (user.role !== Role.ADMIN && user.role !== Role.ALUMNI && user.role !== Role.WHEEL) {
       throw new ForbiddenException('无权访问该资源');
     }
     const row = await this.issuesRepository.findById(id);

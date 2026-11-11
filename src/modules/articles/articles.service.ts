@@ -85,7 +85,7 @@ export class ArticlesService {
   }
 
   async create(user: CurrentAuthUser, dto: CreateArticleDto): Promise<ArticleDetail> {
-    if (user.role !== Role.ADMIN && user.role !== Role.ALUMNI) {
+    if (user.role !== Role.ADMIN && user.role !== Role.ALUMNI && user.role !== Role.WHEEL) {
       throw new ForbiddenException('无权访问该资源');
     }
     const row = await this.articlesRepository.insert({

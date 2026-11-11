@@ -38,3 +38,20 @@ export interface AuthUser {
   role: Role;
   status: UserStatus;
 }
+
+/** 管理后台用户视图（联系方式脱敏） */
+export interface AdminUserView {
+  id: string;
+  nickname: string;
+  contact: string | null;
+  role: Role;
+  status: UserStatus;
+  createdAt: string;
+}
+
+export interface AdminUserPage {
+  items: AdminUserView[];
+  total: number;
+  page: number;
+  pageSize: number;
+}

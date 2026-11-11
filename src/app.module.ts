@@ -6,6 +6,7 @@ import { envValidationSchema } from './config/env.validation';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { JwtAuthGuard } from './common/guards/jwt-auth.guard';
 import { RolesGuard } from './common/guards/roles.guard';
+import { AdminModule } from './modules/admin/admin.module';
 import { ArticlesModule } from './modules/articles/articles.module';
 import { AssignmentsModule } from './modules/assignments/assignments.module';
 import { AuthModule } from './modules/auth/auth.module';
@@ -23,6 +24,7 @@ import { UsersModule } from './modules/users/users.module';
     }),
     StorageModule,
     UsersModule,
+    AdminModule,
     AuthModule,
     ArticlesModule,
     AssignmentsModule,

@@ -61,7 +61,8 @@ export class AssignmentsService {
       startAt: row.startAt.toISOString(),
       deadlineAt: row.deadlineAt.toISOString(),
       state,
-      canSubmit: viewerRole === Role.MEMBER && state === 'OPEN',
+      canSubmit:
+        (viewerRole === Role.MEMBER || viewerRole === Role.ALUMNI) && state === 'OPEN',
       publisher,
       mySubmission,
       createdAt: row.createdAt.toISOString(),
@@ -108,6 +109,9 @@ export class AssignmentsService {
     query: { page: number; pageSize: number },
     user: CurrentAuthUser,
   ): Promise<Page<AssignmentItem>> {
+    if (user.role === Role.VISITOR) {
+      throw new ForbiddenException('无权访问该资源');
+    }
     const { rows, total } = await this.assignmentsRepository.list(query.page, query.pageSize);
     const userMap = await this.usersService.getPublicByIds([
       ...rows.map((row) => row.publisherId),
@@ -151,6 +155,9 @@ export class AssignmentsService {
   }
 
   async getDetail(id: string, user: CurrentAuthUser): Promise<AssignmentItem> {
+    if (user.role === Role.VISITOR) {
+      throw new ForbiddenException('无权访问该资源');
+    }
     const row = await this.requireAssignment(id);
     const publisher = await this.publisherOf(row);
     const submissionRow = await this.assignmentsRepository.findSubmission(id, user.id);
@@ -165,7 +172,7 @@ export class AssignmentsService {
   }
 
   async create(user: CurrentAuthUser, dto: CreateAssignmentDto): Promise<AssignmentItem> {
-    if (user.role !== Role.ADMIN && user.role !== Role.ALUMNI) {
+    if (user.role !== Role.ADMIN && user.role !== Role.ALUMNI && user.role !== Role.WHEEL) {
       throw new ForbiddenException('无权访问该资源');
     }
     this.assertWindowValid(dto.startAt, dto.deadlineAt);
@@ -215,8 +222,8 @@ export class AssignmentsService {
     dto: SubmitSubmissionDto,
   ): Promise<SubmissionView> {
     const row = await this.requireAssignment(id);
-    if (user.role !== Role.MEMBER) {
-      throw new ForbiddenException('仅普通成员可提交作业');
+    if (user.role !== Role.MEMBER && user.role !== Role.ALUMNI) {
+      throw new ForbiddenException('仅学习成员或校友可提交作业');
     }
     const state = this.deriveState(row.startAt, row.deadlineAt, new Date());
     if (state !== 'OPEN') {

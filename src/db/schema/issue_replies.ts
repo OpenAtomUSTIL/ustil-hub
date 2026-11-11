@@ -14,7 +14,7 @@ export const issueReplies = pgTable(
       .references(() => issues.id, { onDelete: 'cascade' }),
     authorId: uuid('author_id')
       .notNull()
-      .references(() => users.id, { onDelete: 'restrict' }),
+      .references(() => users.id, { onDelete: 'cascade' }),
     content: text('content').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true })

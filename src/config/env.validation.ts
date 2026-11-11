@@ -32,4 +32,6 @@ export const envValidationSchema = Joi.object({
     then: Joi.string().required(),
   }),
   UPLOAD_MAX_SIZE: Joi.number().integer().positive().default(10485760),
+  ADMIN_EMAIL: Joi.string().allow('').optional(),
+  ADMIN_PASSWORD: Joi.string().allow('').optional(),
 });

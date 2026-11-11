@@ -98,6 +98,45 @@ describe('IssuesService', () => {
     expect(result.replyCount).toBe(0);
   });
 
+  it('VISITOR 创建 issue 返回 403', async () => {
+    await expect(
+      service.create(
+        { id: '01890a5d-ac96-7000-8000-000000000003', role: Role.VISITOR },
+        { title: '问题标题', content: '问题内容' },
+      ),
+    ).rejects.toThrow(ForbiddenException);
+    expect(issuesRepository.insert).not.toHaveBeenCalled();
+  });
+
+  it('WHEEL 可变更 issue 状态', async () => {
+    issuesRepository.findById
+      .mockResolvedValueOnce(issueRow())
+      .mockResolvedValueOnce(
+        issueRow({
+          status: IssueStatus.ANSWERED,
+          answeredBy: '01890a5d-ac96-7000-8000-000000000001',
+          answeredAt: now,
+        }),
+      );
+    issuesRepository.updateStatus.mockResolvedValue(
+      issueRow({
+        status: IssueStatus.ANSWERED,
+        answeredBy: '01890a5d-ac96-7000-8000-000000000001',
+        answeredAt: now,
+      }),
+    );
+    issuesRepository.findReplies.mockResolvedValue([]);
+
+    const result = await service.changeStatus(
+      '01890a5d-ac96-7000-8000-0000000000e1',
+      { id: '01890a5d-ac96-7000-8000-000000000001', role: Role.WHEEL },
+      { status: IssueStatus.ANSWERED },
+    );
+
+    expect(result.status).toBe(IssueStatus.ANSWERED);
+    expect(issuesRepository.updateStatus).toHaveBeenCalled();
+  });
+
   it('MEMBER 变更 issue 状态返回 403', async () => {
     await expect(
       service.changeStatus(

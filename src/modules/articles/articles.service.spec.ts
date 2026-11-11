@@ -70,6 +70,28 @@ describe('ArticlesService', () => {
     expect(result.author.id).toBe('01890a5d-ac96-7000-8000-000000000001');
   });
 
+  it('WHEEL 创建文章成功', async () => {
+    articlesRepository.insert.mockResolvedValue(row());
+
+    const result = await service.create(
+      { id: '01890a5d-ac96-7000-8000-000000000001', role: Role.WHEEL },
+      { title: '标题', content: '正文内容' },
+    );
+
+    expect(result.title).toBe('标题');
+    expect(articlesRepository.insert).toHaveBeenCalled();
+  });
+
+  it('MEMBER 创建文章返回 403', async () => {
+    await expect(
+      service.create(
+        { id: '01890a5d-ac96-7000-8000-000000000001', role: Role.MEMBER },
+        { title: '标题', content: '正文内容' },
+      ),
+    ).rejects.toThrow(ForbiddenException);
+    expect(articlesRepository.insert).not.toHaveBeenCalled();
+  });
+
   it('非作者本人编辑文章返回 403', async () => {
     articlesRepository.findById.mockResolvedValue(row());
 

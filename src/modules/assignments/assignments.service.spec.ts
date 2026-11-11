@@ -155,6 +155,32 @@ describe('AssignmentsService', () => {
     expect(uploadsService.saveAssignmentFile).not.toHaveBeenCalled();
   });
 
+  it('WHEEL 提交作业返回 403', async () => {
+    assignmentsRepository.findById.mockResolvedValue(assignmentRow());
+
+    await expect(
+      service.submit(
+        '01890a5d-ac96-7000-8000-0000000000b1',
+        { id: '01890a5d-ac96-7000-8000-000000000001', role: Role.WHEEL },
+        {
+          buffer: Buffer.from('pdf'),
+          originalname: 'work.pdf',
+          mimetype: 'application/pdf',
+          size: 3,
+        },
+        {},
+      ),
+    ).rejects.toThrow('仅学习成员或校友可提交作业');
+    expect(uploadsService.saveAssignmentFile).not.toHaveBeenCalled();
+  });
+
+  it('VISITOR 浏览作业列表返回 403', async () => {
+    await expect(
+      service.list({ page: 1, pageSize: 20 }, { id: '01890a5d-ac96-7000-8000-000000000003', role: Role.VISITOR }),
+    ).rejects.toThrow(ForbiddenException);
+    expect(assignmentsRepository.list).not.toHaveBeenCalled();
+  });
+
   it('创建作业：截止时间不晚于开始时间返回 400', async () => {
     await expect(
       service.create(

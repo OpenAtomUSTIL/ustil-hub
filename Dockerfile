@@ -65,6 +65,17 @@ USER app
 # 仅供 `docker compose --profile migrate run --rm migrate` 调用，MUST NOT 挂进服务启动
 CMD ["npx", "drizzle-kit", "migrate"]
 
+# ---------- seed：初始 ADMIN 种子镜像（部署 job 专用）----------
+FROM deps AS seed
+COPY --from=build /app/dist ./dist
+COPY package.json ./
+ENV NODE_ENV=production
+RUN addgroup -S app && adduser -S app -G app && chown -R app:app /app
+USER app
+# 幂等：ADMIN_EMAIL 已存在则跳过；仅供 `docker compose --profile seed run --rm seed` 调用，
+# MUST NOT 挂进服务启动（启动命令不做 DB 写入）
+CMD ["node", "dist/scripts/seed-admin.js"]
+
 # ---------- runtime：生产运行时（默认目标，放最后）----------
 FROM node:20-alpine AS runtime
 ENV NODE_ENV=production

@@ -1,10 +1,11 @@
-import { HttpException, HttpStatus, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, HttpException, HttpStatus, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 import { AppConfig, configuration } from '../../config/configuration';
 import { Role } from '../../common/decorators/roles.decorator';
 import { REDIS_CLIENT, REFRESH_TOKEN_STORE } from '../../db/redis';
 import { UserStatus } from '../../db/schema';
+import { InviteCodesService } from '../admin/invite-codes.service';
 import { UsersService } from '../users/users.service';
 import { UserSelf } from '../users/users.views';
 import { AuthService } from './auth.service';
@@ -54,6 +55,14 @@ describe('AuthService', () => {
     updatePasswordHash: jest.fn(),
     getSelf: jest.fn(),
     getAuthUser: jest.fn(),
+    applyInviteCode: jest.fn(),
+  };
+  const inviteCodesService = {
+    consume: jest.fn(),
+    release: jest.fn(),
+    generate: jest.fn(),
+    list: jest.fn(),
+    revoke: jest.fn(),
   };
   const redis = {
     get: jest.fn(),
@@ -76,6 +85,7 @@ describe('AuthService', () => {
       providers: [
         AuthService,
         { provide: UsersService, useValue: usersService },
+        { provide: InviteCodesService, useValue: inviteCodesService },
         { provide: JwtService, useValue: new JwtService({ secret: 'unit-test-secret' }) },
         { provide: REDIS_CLIENT, useValue: redis },
         { provide: REFRESH_TOKEN_STORE, useValue: refreshStore },
@@ -106,6 +116,112 @@ describe('AuthService', () => {
       expect.any(String),
       7 * 24 * 3600,
     );
+  });
+
+  it('无码注册：创建 VISITOR 账号', async () => {
+    usersService.createUser.mockResolvedValue({ ...selfFixture, role: Role.VISITOR });
+
+    await service.register({
+      identifier: 'a@example.com',
+      password: 'password123',
+      nickname: '测试用户',
+    });
+
+    expect(inviteCodesService.consume).not.toHaveBeenCalled();
+    expect(usersService.createUser).toHaveBeenCalledWith(
+      expect.objectContaining({ role: Role.VISITOR, inviteCodeId: null }),
+    );
+  });
+
+  it('有码注册：核销邀请码并创建 MEMBER 账号', async () => {
+    inviteCodesService.consume.mockResolvedValue({ id: 'invite-1' });
+    usersService.createUser.mockResolvedValue(selfFixture);
+
+    await service.register({
+      identifier: 'a@example.com',
+      password: 'password123',
+      nickname: '测试用户',
+      inviteCode: 'ABCD2345EF',
+    });
+
+    expect(inviteCodesService.consume).toHaveBeenCalledWith('ABCD2345EF');
+    expect(usersService.createUser).toHaveBeenCalledWith(
+      expect.objectContaining({ role: Role.MEMBER, inviteCodeId: 'invite-1' }),
+    );
+    expect(inviteCodesService.release).not.toHaveBeenCalled();
+  });
+
+  it('邀请码无效：409 且不落库', async () => {
+    inviteCodesService.consume.mockRejectedValue(new ConflictException('邀请码已被用尽'));
+
+    await expect(
+      service.register({
+        identifier: 'a@example.com',
+        password: 'password123',
+        nickname: '测试用户',
+        inviteCode: 'FULL2345CD',
+      }),
+    ).rejects.toThrow(ConflictException);
+    expect(usersService.createUser).not.toHaveBeenCalled();
+  });
+
+  it('注册落库失败：回退核销计数', async () => {
+    inviteCodesService.consume.mockResolvedValue({ id: 'invite-1' });
+    usersService.createUser.mockRejectedValue(new ConflictException('该邮箱或手机号已被注册'));
+
+    await expect(
+      service.register({
+        identifier: 'a@example.com',
+        password: 'password123',
+        nickname: '测试用户',
+        inviteCode: 'ABCD2345EF',
+      }),
+    ).rejects.toThrow(ConflictException);
+    expect(inviteCodesService.release).toHaveBeenCalledWith('invite-1');
+  });
+
+  it('持码转正：VISITOR 核销邀请码升为 MEMBER 并换发 token', async () => {
+    usersService.getAuthUser.mockResolvedValue({
+      id: selfFixture.id,
+      role: Role.VISITOR,
+      status: UserStatus.ACTIVE,
+    });
+    inviteCodesService.consume.mockResolvedValue({ id: 'invite-1' });
+    usersService.applyInviteCode.mockResolvedValue(selfFixture);
+
+    const result = await service.redeemInviteCode(selfFixture.id, { inviteCode: 'ABCD2345EF' });
+
+    expect(inviteCodesService.consume).toHaveBeenCalledWith('ABCD2345EF');
+    expect(usersService.applyInviteCode).toHaveBeenCalledWith(selfFixture.id, 'invite-1');
+    expect(refreshStore.revokeAll).toHaveBeenCalledWith(selfFixture.id);
+    expect(result.tokens.accessToken).toBeTruthy();
+  });
+
+  it('持码转正：非 VISITOR 返回 403', async () => {
+    usersService.getAuthUser.mockResolvedValue({
+      id: selfFixture.id,
+      role: Role.MEMBER,
+      status: UserStatus.ACTIVE,
+    });
+
+    await expect(
+      service.redeemInviteCode(selfFixture.id, { inviteCode: 'ABCD2345EF' }),
+    ).rejects.toThrow(ForbiddenException);
+    expect(inviteCodesService.consume).not.toHaveBeenCalled();
+  });
+
+  it('持码转正：邀请码无效 409 且不改角色', async () => {
+    usersService.getAuthUser.mockResolvedValue({
+      id: selfFixture.id,
+      role: Role.VISITOR,
+      status: UserStatus.ACTIVE,
+    });
+    inviteCodesService.consume.mockRejectedValue(new ConflictException('邀请码已被用尽'));
+
+    await expect(
+      service.redeemInviteCode(selfFixture.id, { inviteCode: 'FULL2345CD' }),
+    ).rejects.toThrow(ConflictException);
+    expect(usersService.applyInviteCode).not.toHaveBeenCalled();
   });
 
   it('登录失败（密码错误）：统一返回“账号或密码错误”', async () => {

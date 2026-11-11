@@ -32,7 +32,7 @@ export class ArticlesController {
   }
 
   @Post()
-  @Roles(Role.ADMIN, Role.ALUMNI)
+  @Roles(Role.ADMIN, Role.ALUMNI, Role.WHEEL)
   create(@CurrentUser() user: CurrentAuthUser, @Body() dto: CreateArticleDto) {
     return this.articlesService.create(user, dto);
   }

@@ -19,6 +19,7 @@ import {
   RefreshTokenStore,
 } from '../../db/redis';
 import { UserStatus } from '../../db/schema';
+import { InviteCodesService } from '../admin/invite-codes.service';
 import { UsersService, normalizeIdentifier } from '../users/users.service';
 import { UserSelf } from '../users/users.views';
 import {
@@ -28,6 +29,7 @@ import {
 } from './cookies';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { LoginDto } from './dto/login.dto';
+import { RedeemInviteCodeDto } from './dto/redeem-invite-code.dto';
 import { RegisterDto } from './dto/register.dto';
 import { hashPassword, verifyPassword } from './password';
 
@@ -43,6 +45,7 @@ interface RefreshPayload {
 export class AuthService {
   constructor(
     private readonly usersService: UsersService,
+    private readonly inviteCodesService: InviteCodesService,
     private readonly jwtService: JwtService,
     @Inject(REDIS_CLIENT) private readonly redis: RedisClient,
     @Inject(REFRESH_TOKEN_STORE) private readonly refreshStore: RefreshTokenStore,
@@ -71,12 +74,52 @@ export class AuthService {
     const identifier = normalizeIdentifier(dto.identifier);
     const isEmailIdentifier = identifier.includes('@');
     const passwordHash = await hashPassword(dto.password);
-    const user = await this.usersService.createUser({
-      email: isEmailIdentifier ? identifier : null,
-      phone: isEmailIdentifier ? null : identifier,
-      passwordHash,
-      nickname: dto.nickname,
-    });
+    // 有码 → MEMBER 并核销；无码 → VISITOR（7 天清理对象）
+    const invite = dto.inviteCode ? await this.inviteCodesService.consume(dto.inviteCode) : null;
+    let user: UserSelf;
+    try {
+      user = await this.usersService.createUser({
+        email: isEmailIdentifier ? identifier : null,
+        phone: isEmailIdentifier ? null : identifier,
+        passwordHash,
+        nickname: dto.nickname,
+        role: invite ? Role.MEMBER : Role.VISITOR,
+        inviteCodeId: invite ? invite.id : null,
+      });
+    } catch (error) {
+      // 落库失败（如邮箱已注册）时回退核销计数
+      if (invite) {
+        await this.inviteCodesService.release(invite.id);
+      }
+      throw error;
+    }
+    const tokens = await this.issueTokens(user.id, user.role);
+    return { user, tokens };
+  }
+
+  /** 持码转正：VISITOR 提交邀请码 → MEMBER（核销一人名额），并换发双 token */
+  async redeemInviteCode(
+    userId: string,
+    dto: RedeemInviteCodeDto,
+  ): Promise<{ user: UserSelf; tokens: AuthTokens }> {
+    const authUser = await this.usersService.getAuthUser(userId);
+    if (!authUser) {
+      throw new UnauthorizedException('登录已过期，请重新登录');
+    }
+    if (authUser.role !== Role.VISITOR) {
+      throw new ForbiddenException('仅临时访客可使用邀请码转正');
+    }
+    const invite = await this.inviteCodesService.consume(dto.inviteCode);
+    let user: UserSelf;
+    try {
+      user = await this.usersService.applyInviteCode(userId, invite.id);
+    } catch (error) {
+      // 转正落库失败（如并发下角色已变更）时回退核销计数
+      await this.inviteCodesService.release(invite.id);
+      throw error;
+    }
+    // 角色变更，旧 token 全部作废并换发新的
+    await this.refreshStore.revokeAll(userId);
     const tokens = await this.issueTokens(user.id, user.role);
     return { user, tokens };
   }

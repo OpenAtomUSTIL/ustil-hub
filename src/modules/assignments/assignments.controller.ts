@@ -35,7 +35,7 @@ export class AssignmentsController {
   }
 
   @Post()
-  @Roles(Role.ADMIN, Role.ALUMNI)
+  @Roles(Role.ADMIN, Role.ALUMNI, Role.WHEEL)
   create(@CurrentUser() user: CurrentAuthUser, @Body() dto: CreateAssignmentDto) {
     return this.assignmentsService.create(user, dto);
   }

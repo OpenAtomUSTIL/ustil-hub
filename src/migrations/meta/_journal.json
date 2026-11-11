@@ -8,6 +8,20 @@
       "when": 1794272585175,
       "tag": "0000_slim_goblin_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794358727563,
+      "tag": "0001_flat_thunderbolt_ross",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794359342133,
+      "tag": "0002_woozy_karen_page",
+      "breakpoints": true
     }
   ]
 }

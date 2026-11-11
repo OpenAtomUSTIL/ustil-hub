@@ -15,7 +15,7 @@ export const assignmentSubmissions = pgTable(
       .references(() => assignments.id, { onDelete: 'cascade' }),
     submitterId: uuid('submitter_id')
       .notNull()
-      .references(() => users.id, { onDelete: 'restrict' }),
+      .references(() => users.id, { onDelete: 'cascade' }),
     note: text('note'),
     attachmentId: uuid('attachment_id')
       .notNull()
