@@ -228,8 +228,11 @@ controller → service → repository(db)
 
 | Cookie | 内容 | TTL | Path | 说明 |
 |---|---|---|---|---|
-| `access_token` | JWT，含 `sub`(userId) + `role` | 15m | `/` | SameSite=Lax，生产 `Secure` |
+| `access_token` | JWT，含 `sub`(userId) + `role` | 15m | `/` | SameSite=Lax，`Secure` 恒开 |
 | `refresh_token` | JWT，含 `sub` + `jti` | 7d | `/api/v1/auth` | 仅刷新/登出接口可见 |
+
+- cookie `Secure` 恒开（2026-11-12 安全修复）：全站 HTTPS（nginx 443 + 80 跳转），本地开发走 `https://localhost`（自签证书见 `deploy/init-certs.sh`）。
+- `POST /auth/refresh` 响应 `MUST` 只含脱敏公开字段（UserPublic：id/nickname/avatarUrl/role），`MUST NOT` 返回 `email`/`phone`；前端登录态恢复一律以 `GET /auth/me` 为来源。
 
 - `refresh_token` 的 `jti` `MUST` 存 Redis 白名单，key = `refresh:{userId}:{jti}`，TTL = 7d。
 - 刷新时**轮换**：旧 `jti` 立即删除，签发新的。检测到已删除的 `jti` 被复用 → 视为窃取，删除该用户全部 refresh 并强制重登。

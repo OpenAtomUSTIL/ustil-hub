@@ -22,7 +22,7 @@ import { UserStatus } from '../../db/schema';
 import { InviteCodesService } from '../admin/invite-codes.service';
 import { LoginLogsService } from '../audit/login-logs.service';
 import { UsersService, normalizeIdentifier } from '../users/users.service';
-import { AuthUser, UserSelf } from '../users/users.views';
+import { AuthUser, UserPublic, UserSelf } from '../users/users.views';
 import {
   ACCESS_TOKEN_TTL_SECONDS,
   AuthTokens,
@@ -226,7 +226,7 @@ export class AuthService {
     return { user, tokens };
   }
 
-  async refresh(refreshToken: string | undefined): Promise<{ user: UserSelf; tokens: AuthTokens }> {
+  async refresh(refreshToken: string | undefined): Promise<{ user: UserPublic; tokens: AuthTokens }> {
     if (!refreshToken) {
       throw new UnauthorizedException('登录已过期，请重新登录');
     }
@@ -260,7 +260,7 @@ export class AuthService {
       await this.usersService.invalidateSessions(authUser.id, authUser.sessionVersion);
       throw new UnauthorizedException('登录状态已失效，请重新登录');
     }
-    const user = await this.usersService.getSelf(authUser.id);
+    const user = await this.usersService.getPublic(authUser.id);
     return { user, tokens };
   }
 

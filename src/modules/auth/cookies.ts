@@ -13,38 +13,34 @@ export interface AuthTokens {
   refreshToken: string;
 }
 
-export interface CookieFlags {
-  secure: boolean;
-}
-
-export function setAuthCookies(res: Response, tokens: AuthTokens, flags: CookieFlags): void {
+export function setAuthCookies(res: Response, tokens: AuthTokens): void {
   res.cookie(ACCESS_TOKEN_COOKIE, tokens.accessToken, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: flags.secure,
+    secure: true,
     path: '/',
     maxAge: ACCESS_TOKEN_TTL_SECONDS * 1000,
   });
   res.cookie(REFRESH_TOKEN_COOKIE, tokens.refreshToken, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: flags.secure,
+    secure: true,
     path: REFRESH_COOKIE_PATH,
     maxAge: REFRESH_TOKEN_TTL_SECONDS * 1000,
   });
 }
 
-export function clearAuthCookies(res: Response, flags: CookieFlags): void {
+export function clearAuthCookies(res: Response): void {
   res.clearCookie(ACCESS_TOKEN_COOKIE, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: flags.secure,
+    secure: true,
     path: '/',
   });
   res.clearCookie(REFRESH_TOKEN_COOKIE, {
     httpOnly: true,
     sameSite: 'lax',
-    secure: flags.secure,
+    secure: true,
     path: REFRESH_COOKIE_PATH,
   });
 }

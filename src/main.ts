@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 import cookieParser from 'cookie-parser';
+import helmet from 'helmet';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { appValidationPipe } from './common/pipes/app-validation.pipe';
@@ -10,6 +11,7 @@ async function bootstrap(): Promise<void> {
   const cfg = app.get<AppConfig>(configuration.KEY);
 
   app.setGlobalPrefix('api/v1');
+  app.use(helmet());
   app.use(cookieParser());
   app.useGlobalPipes(appValidationPipe);
   // 全局异常过滤器经 APP_FILTER 注册（见 app.module.ts）

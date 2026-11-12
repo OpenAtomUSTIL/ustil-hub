@@ -55,6 +55,7 @@ describe('AuthService', () => {
     getAuthRecordById: jest.fn(),
     updatePasswordHash: jest.fn(),
     getSelf: jest.fn(),
+    getPublic: jest.fn(),
     getAuthUser: jest.fn(),
     applyInviteCode: jest.fn(),
     invalidateSessions: jest.fn(),
@@ -276,6 +277,40 @@ describe('AuthService', () => {
     await expect(service.refresh(token)).rejects.toThrow(UnauthorizedException);
     expect(usersService.invalidateSessions).toHaveBeenCalledWith(selfFixture.id, 0);
     expect(refreshStore.register).not.toHaveBeenCalled();
+  });
+
+  it('refresh 成功：轮换 jti 并只返回脱敏公开字段（不泄露 email/phone）', async () => {
+    const token = jwtService.sign(
+      { sub: selfFixture.id, jti: 'jti-old', sessionVersion: 0 },
+      { secret: testConfig.jwtRefreshSecret, expiresIn: 60 },
+    );
+    refreshStore.rotate.mockResolvedValue(true);
+    usersService.getPublic.mockResolvedValue({
+      id: selfFixture.id,
+      nickname: '测试用户',
+      avatarUrl: null,
+      role: Role.MEMBER,
+    });
+
+    const result = await service.refresh(token);
+
+    expect(result.tokens.accessToken).toBeTruthy();
+    expect(result.tokens.refreshToken).toBeTruthy();
+    expect(refreshStore.rotate).toHaveBeenCalledWith(
+      selfFixture.id,
+      'jti-old',
+      expect.any(String),
+      7 * 24 * 3600,
+    );
+    expect(result.user).toEqual({
+      id: selfFixture.id,
+      nickname: '测试用户',
+      avatarUrl: null,
+      role: Role.MEMBER,
+    });
+    expect(result.user).not.toHaveProperty('email');
+    expect(result.user).not.toHaveProperty('phone');
+    expect(usersService.getSelf).not.toHaveBeenCalled();
   });
 
   it('改密码：当前密码错误返回 400', async () => {
