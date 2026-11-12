@@ -6,16 +6,19 @@ import {
   Patch,
   Post,
   Put,
+  Query,
   UploadedFile,
   UseInterceptors,
 } from '@nestjs/common';
 import { CurrentUser, CurrentAuthUser } from '../../common/decorators/current-user.decorator';
 import { Roles, Role } from '../../common/decorators/roles.decorator';
+import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { fileUploadInterceptor } from '../../common/interceptors/file-upload.interceptor';
 import { uuidParamPipe } from '../../common/pipes/uuid-param.pipe';
 import { UploadedFileInput } from '../storage/uploads.service';
 import { ChangeIdentifierDto } from './dto/change-identifier.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { UpdateProfilePageDto } from './dto/update-profile-page.dto';
 import { UsersService } from './users.service';
 
 @Controller('users')
@@ -59,5 +62,38 @@ export class UsersController {
   @Get(':id')
   getPublic(@Param('id', uuidParamPipe) id: string) {
     return this.usersService.getPublic(id);
+  }
+
+  @Get(':id/profile')
+  getProfile(
+    @Param('id', uuidParamPipe) id: string,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.usersService.getProfile(id, user);
+  }
+
+  @Put('me/profile-page')
+  updateProfilePage(
+    @CurrentUser() user: CurrentAuthUser,
+    @Body() dto: UpdateProfilePageDto,
+  ) {
+    return this.usersService.updateProfilePage(user.id, dto);
+  }
+
+  @Get(':id/activity')
+  getActivity(
+    @Param('id', uuidParamPipe) id: string,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.usersService.getActivity(id, user);
+  }
+
+  @Get(':id/replies')
+  getReplies(
+    @Param('id', uuidParamPipe) id: string,
+    @Query() query: PaginationQueryDto,
+    @CurrentUser() user: CurrentAuthUser,
+  ) {
+    return this.usersService.getReplies(id, user, query.page, query.pageSize);
   }
 }

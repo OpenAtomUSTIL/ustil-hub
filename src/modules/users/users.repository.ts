@@ -1,9 +1,50 @@
 import { Injectable } from '@nestjs/common';
-import { and, desc, eq, gte, ilike, inArray, like, lt, ne, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, ilike, inArray, isNull, like, lt, ne, or, sql } from 'drizzle-orm';
 import { db, Database } from '../../db';
-import { UserStatus, users } from '../../db/schema';
+import {
+  articles,
+  assignmentSubmissions,
+  issueReplies,
+  issues,
+  resources,
+  taggings,
+  tags,
+  UserStatus,
+  users,
+} from '../../db/schema';
 
 export type UserRow = typeof users.$inferSelect;
+
+export type PinnedItemType = 'ARTICLE' | 'ISSUE' | 'RESOURCE';
+
+export interface PinnedTarget {
+  type: PinnedItemType;
+  id: string;
+  title: string;
+  url?: string;
+  ownerId: string;
+}
+
+export interface ActivityDayCount {
+  date: string;
+  count: number;
+}
+
+export interface ActivityParts {
+  articles: ActivityDayCount[];
+  issues: ActivityDayCount[];
+  replies: ActivityDayCount[];
+  submissions: ActivityDayCount[];
+  resources: ActivityDayCount[];
+}
+
+export interface ProfileReplyRow {
+  id: string;
+  issueId: string;
+  issueTitle: string;
+  content: string;
+  createdAt: Date;
+}
 
 @Injectable()
 export class UsersRepository {
@@ -312,5 +353,205 @@ export class UsersRepository {
     }
     const rows = await db.select({ id: users.id, email: users.email }).from(users).where(inArray(users.id, ids));
     return new Map(rows.map((row) => [row.id, row.email]));
+  }
+
+  async updateProfilePage(
+    id: string,
+    patch: {
+      bio?: string | null;
+      profileReadme?: string | null;
+      pinnedItems?: { type: string; id: string }[];
+    },
+  ): Promise<UserRow | null> {
+    const rows = await db
+      .update(users)
+      .set(patch)
+      .where(eq(users.id, id))
+      .returning();
+    return rows[0] ?? null;
+  }
+
+  async getProfileStats(userId: string): Promise<{
+    articles: number;
+    issues: number;
+    replies: number;
+    submissions: number;
+  }> {
+    const [articleCount, issueCount, replyCount, submissionCount] = await Promise.all([
+      db.select({ count: sql<number>`count(*)::int` }).from(articles)
+        .where(and(eq(articles.authorId, userId), isNull(articles.deletedAt), eq(articles.status, 'PUBLISHED'))),
+      db.select({ count: sql<number>`count(*)::int` }).from(issues)
+        .where(eq(issues.authorId, userId)),
+      db.select({ count: sql<number>`count(*)::int` }).from(issueReplies)
+        .where(and(eq(issueReplies.authorId, userId), isNull(issueReplies.deletedAt))),
+      db.select({ count: sql<number>`count(*)::int` }).from(assignmentSubmissions)
+        .where(eq(assignmentSubmissions.submitterId, userId)),
+    ]);
+
+    return {
+      articles: articleCount[0]?.count ?? 0,
+      issues: issueCount[0]?.count ?? 0,
+      replies: replyCount[0]?.count ?? 0,
+      submissions: submissionCount[0]?.count ?? 0,
+    };
+  }
+
+  async getProfileTopTags(userId: string, limit = 10): Promise<{ name: string; count: number }[]> {
+    const articleIds = db.select({ id: articles.id }).from(articles)
+      .where(and(eq(articles.authorId, userId), isNull(articles.deletedAt), eq(articles.status, 'PUBLISHED')));
+    const issueIds = db.select({ id: issues.id }).from(issues).where(eq(issues.authorId, userId));
+    const resourceIds = db.select({ id: resources.id }).from(resources).where(eq(resources.creatorId, userId));
+
+    const rows = await db
+      .select({ name: tags.name, count: sql<number>`count(*)::int` })
+      .from(taggings)
+      .innerJoin(tags, eq(tags.id, taggings.tagId))
+      .where(and(inArray(taggings.targetId, articleIds), eq(taggings.targetType, 'ARTICLE')))
+      .groupBy(tags.name);
+
+    const issueTagRows = await db
+      .select({ name: tags.name, count: sql<number>`count(*)::int` })
+      .from(taggings)
+      .innerJoin(tags, eq(tags.id, taggings.tagId))
+      .where(and(inArray(taggings.targetId, issueIds), eq(taggings.targetType, 'ISSUE')))
+      .groupBy(tags.name);
+
+    const resourceTagRows = await db
+      .select({ name: tags.name, count: sql<number>`count(*)::int` })
+      .from(taggings)
+      .innerJoin(tags, eq(tags.id, taggings.tagId))
+      .where(and(inArray(taggings.targetId, resourceIds), eq(taggings.targetType, 'RESOURCE')))
+      .groupBy(tags.name);
+
+    const merged = new Map<string, number>();
+    for (const r of rows) {
+      const prev = merged.get(r.name) || 0;
+      merged.set(r.name, prev + r.count);
+    }
+    for (const r of issueTagRows) {
+      const prev = merged.get(r.name) || 0;
+      merged.set(r.name, prev + r.count);
+    }
+    for (const r of resourceTagRows) {
+      const prev = merged.get(r.name) || 0;
+      merged.set(r.name, prev + r.count);
+    }
+
+    return [...merged.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+      .slice(0, limit);
+  }
+
+  /** 五类事件按 UTC 日聚合（软删不计），按类型分开返回，合并口径在 service 层 */
+  async getActivityParts(userId: string, since: Date): Promise<ActivityParts> {
+    const articleDay = sql<string>`to_char(${articles.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD')`;
+    const issueDay = sql<string>`to_char(${issues.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD')`;
+    const replyDay = sql<string>`to_char(${issueReplies.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD')`;
+    const subDay = sql<string>`to_char(${assignmentSubmissions.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD')`;
+    const resDay = sql<string>`to_char(${resources.createdAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD')`;
+
+    const [articleDays, issueDays, replyDays, subDays, resDays] = await Promise.all([
+      db.select({ date: articleDay, count: sql<number>`count(*)::int` })
+        .from(articles)
+        .where(and(eq(articles.authorId, userId), isNull(articles.deletedAt), gte(articles.createdAt, since)))
+        .groupBy(articleDay),
+      db.select({ date: issueDay, count: sql<number>`count(*)::int` })
+        .from(issues)
+        .where(and(eq(issues.authorId, userId), gte(issues.createdAt, since)))
+        .groupBy(issueDay),
+      db.select({ date: replyDay, count: sql<number>`count(*)::int` })
+        .from(issueReplies)
+        .where(and(eq(issueReplies.authorId, userId), isNull(issueReplies.deletedAt), gte(issueReplies.createdAt, since)))
+        .groupBy(replyDay),
+      db.select({ date: subDay, count: sql<number>`count(*)::int` })
+        .from(assignmentSubmissions)
+        .where(and(eq(assignmentSubmissions.submitterId, userId), gte(assignmentSubmissions.createdAt, since)))
+        .groupBy(subDay),
+      db.select({ date: resDay, count: sql<number>`count(*)::int` })
+        .from(resources)
+        .where(and(eq(resources.creatorId, userId), isNull(resources.deletedAt), gte(resources.createdAt, since)))
+        .groupBy(resDay),
+    ]);
+
+    return {
+      articles: articleDays,
+      issues: issueDays,
+      replies: replyDays,
+      submissions: subDays,
+      resources: resDays,
+    };
+  }
+
+  /** 置顶目标解析：仅返回存在且未软删的目标（含归属），软删目标静默跳过 */
+  async findPinnedTargets(items: { type: string; id: string }[]): Promise<PinnedTarget[]> {
+    const result: PinnedTarget[] = [];
+    const idsByType = new Map<PinnedItemType, string[]>();
+    for (const item of items) {
+      if (item.type !== 'ARTICLE' && item.type !== 'ISSUE' && item.type !== 'RESOURCE') continue;
+      const list = idsByType.get(item.type) ?? [];
+      list.push(item.id);
+      idsByType.set(item.type, list);
+    }
+
+    const articleIds = idsByType.get('ARTICLE') ?? [];
+    if (articleIds.length > 0) {
+      const rows = await db
+        .select({ id: articles.id, title: articles.title, ownerId: articles.authorId })
+        .from(articles)
+        .where(and(inArray(articles.id, articleIds), isNull(articles.deletedAt)));
+      for (const r of rows) {
+        result.push({ type: 'ARTICLE', id: r.id, title: r.title, ownerId: r.ownerId });
+      }
+    }
+
+    const issueIds = idsByType.get('ISSUE') ?? [];
+    if (issueIds.length > 0) {
+      const rows = await db
+        .select({ id: issues.id, title: issues.title, ownerId: issues.authorId })
+        .from(issues)
+        .where(inArray(issues.id, issueIds));
+      for (const r of rows) {
+        result.push({ type: 'ISSUE', id: r.id, title: r.title, ownerId: r.ownerId });
+      }
+    }
+
+    const resourceIds = idsByType.get('RESOURCE') ?? [];
+    if (resourceIds.length > 0) {
+      const rows = await db
+        .select({ id: resources.id, title: resources.title, url: resources.url, ownerId: resources.creatorId })
+        .from(resources)
+        .where(and(inArray(resources.id, resourceIds), isNull(resources.deletedAt)));
+      for (const r of rows) {
+        result.push({ type: 'RESOURCE', id: r.id, title: r.title, url: r.url, ownerId: r.ownerId });
+      }
+    }
+
+    return result;
+  }
+
+  /** 某用户的讨论回复（软删不计），带所属讨论标题，按创建时间倒序 */
+  async listRepliesByAuthor(
+    userId: string,
+    page: number,
+    pageSize: number,
+  ): Promise<{ rows: ProfileReplyRow[]; total: number }> {
+    const where = and(eq(issueReplies.authorId, userId), isNull(issueReplies.deletedAt));
+    const rows = await db
+      .select({
+        id: issueReplies.id,
+        issueId: issueReplies.issueId,
+        issueTitle: issues.title,
+        content: issueReplies.content,
+        createdAt: issueReplies.createdAt,
+      })
+      .from(issueReplies)
+      .innerJoin(issues, eq(issues.id, issueReplies.issueId))
+      .where(where)
+      .orderBy(desc(issueReplies.createdAt))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize);
+    const totalRows = await db.select({ count: sql<number>`count(*)::int` }).from(issueReplies).where(where);
+    return { rows, total: totalRows[0]?.count ?? 0 };
   }
 }

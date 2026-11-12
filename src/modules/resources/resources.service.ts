@@ -58,6 +58,7 @@ export class ResourcesService {
     const { rows, total } = await this.resourcesRepository.list(query.page, query.pageSize, {
       category: query.category,
       keyword: query.keyword,
+      creatorId: query.creatorId,
       tagTargetIds,
     });
     return {

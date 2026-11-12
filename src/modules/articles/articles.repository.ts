@@ -7,9 +7,16 @@ export type ArticleRow = typeof articles.$inferSelect;
 
 @Injectable()
 export class ArticlesRepository {
-  private buildWhere(keyword?: string, authorId?: string, tagTargetIds?: string[]) {
-    // 普通查询一律排除软删行
+  private buildWhere(
+    keyword?: string,
+    authorId?: string,
+    tagTargetIds?: string[],
+    status?: string,
+  ) {
     const conditions: (SQL | undefined)[] = [isNull(articles.deletedAt)];
+    if (status) {
+      conditions.push(eq(articles.status, status));
+    }
     const trimmed = keyword?.trim();
     if (trimmed) {
       const pattern = `%${trimmed}%`;
@@ -34,9 +41,10 @@ export class ArticlesRepository {
       keyword?: string;
       authorId?: string;
       tagTargetIds?: string[];
+      status?: string;
     },
   ): Promise<{ rows: ArticleRow[]; total: number }> {
-    const built = this.buildWhere(filters.keyword, filters.authorId, filters.tagTargetIds);
+    const built = this.buildWhere(filters.keyword, filters.authorId, filters.tagTargetIds, filters.status);
     if (built.empty) {
       return { rows: [], total: 0 };
     }
@@ -68,7 +76,12 @@ export class ArticlesRepository {
     return rows[0] ?? null;
   }
 
-  async insert(row: { title: string; content: string; authorId: string }): Promise<ArticleRow> {
+  async insert(row: {
+    title: string;
+    content: string;
+    authorId: string;
+    status: string;
+  }): Promise<ArticleRow> {
     const inserted = await db.insert(articles).values(row).returning();
     return inserted[0];
   }
@@ -81,6 +94,25 @@ export class ArticlesRepository {
       .update(articles)
       .set(patch)
       .where(eq(articles.id, id))
+      .returning();
+    return rows[0] ?? null;
+  }
+
+  async updateStatus(
+    id: string,
+    status: string,
+    reviewedBy: string,
+    reviewNote?: string,
+  ): Promise<ArticleRow | null> {
+    const rows = await db
+      .update(articles)
+      .set({
+        status,
+        reviewedBy,
+        reviewedAt: new Date(),
+        reviewNote: reviewNote ?? null,
+      })
+      .where(and(eq(articles.id, id), isNull(articles.deletedAt)))
       .returning();
     return rows[0] ?? null;
   }

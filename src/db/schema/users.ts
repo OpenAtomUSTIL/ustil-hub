@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { check, index, integer, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { check, index, integer, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, varchar, uuid } from 'drizzle-orm/pg-core';
 import { v7 as uuidv7 } from 'uuid';
 import { inviteCodes } from './invite_codes';
 
@@ -33,6 +33,10 @@ export const users = pgTable(
     }),
     // 最近活跃时间（在线用户统计用，请求拦截器节流更新）
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+    // 个人主页：短 bio + 长 README + 置顶内容
+    bio: varchar('bio', { length: 100 }),
+    profileReadme: text('profile_readme'),
+    pinnedItems: jsonb('pinned_items').$type<{ type: string; id: string }[]>().default([]),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()

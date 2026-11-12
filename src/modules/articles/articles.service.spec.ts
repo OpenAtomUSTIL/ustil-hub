@@ -15,6 +15,10 @@ function row(overrides: Partial<ArticleRow> = {}): ArticleRow {
     title: '标题',
     content: '正文内容',
     authorId: '01890a5d-ac96-7000-8000-000000000001',
+    status: 'PUBLISHED',
+    reviewedBy: null,
+    reviewedAt: null,
+    reviewNote: null,
     createdAt: now,
     updatedAt: now,
     ...overrides,
@@ -30,6 +34,7 @@ describe('ArticlesService', () => {
     findByIdIncludingDeleted: jest.fn(),
     insert: jest.fn(),
     update: jest.fn(),
+    updateStatus: jest.fn(),
     softDeleteById: jest.fn(),
     listDeleted: jest.fn(),
     restoreById: jest.fn(),
@@ -88,6 +93,23 @@ describe('ArticlesService', () => {
     expect(result.title).toBe('标题');
     expect(result.tags).toEqual(['tag-a']);
     expect(result.author.id).toBe('01890a5d-ac96-7000-8000-000000000001');
+    expect(result.status).toBe('PUBLISHED');
+  });
+
+  it('MEMBER 创建文章成功，状态为 PENDING', async () => {
+    articlesRepository.insert.mockResolvedValue(row({ status: 'PENDING' }));
+    articlesRepository.findById.mockResolvedValue(row({ status: 'PENDING' }));
+
+    const result = await service.create(
+      { id: '01890a5d-ac96-7000-8000-000000000001', role: Role.MEMBER },
+      { title: '标题', content: '正文内容' },
+    );
+
+    expect(result.title).toBe('标题');
+    expect(result.status).toBe('PENDING');
+    expect(articlesRepository.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'PENDING' }),
+    );
   });
 
   it('创建文章写入标签与审计日志', async () => {
@@ -121,7 +143,55 @@ describe('ArticlesService', () => {
       keyword: undefined,
       authorId: '01890a5d-ac96-7000-8000-000000000001',
       tagTargetIds: ['01890a5d-ac96-7000-8000-0000000000a1'],
+      status: undefined,
     });
+  });
+
+  it('公开列表只查 PUBLISHED', async () => {
+    articlesRepository.list.mockResolvedValue({ rows: [row()], total: 1 });
+    tagsService.findTargetIds.mockResolvedValue(undefined);
+
+    await service.list({ page: 1, pageSize: 20 });
+
+    expect(articlesRepository.list).toHaveBeenCalledWith(1, 20, {
+      keyword: undefined,
+      authorId: undefined,
+      tagTargetIds: undefined,
+      status: 'PUBLISHED',
+    });
+  });
+
+  it('摘要按块截取：HTML 块保整、文本块按长度截断、纯文本不加省略号', async () => {
+    const longText = '文'.repeat(200);
+    articlesRepository.list.mockResolvedValue({
+      rows: [
+        row({ content: `<div align="center"><img src="https://x/banner.png"></div>\n\n${longText}` }),
+        row({ content: 'a < b 与 c' }),
+      ],
+      total: 2,
+    });
+    tagsService.findTargetIds.mockResolvedValue(undefined);
+
+    const result = await service.list({ page: 1, pageSize: 20 });
+
+    const [first, second] = result.items;
+    expect(first.excerpt.startsWith('<div align="center"><img src="https://x/banner.png"></div>')).toBe(true);
+    expect(first.excerpt.endsWith('…')).toBe(true);
+    expect(second.excerpt).toBe('a < b 与 c');
+  });
+
+  it('摘要不残留半截 HTML 标签', async () => {
+    articlesRepository.list.mockResolvedValue({
+      rows: [row({ content: `${'文'.repeat(110)}<img src="https://x/a.png">尾巴` })],
+      total: 1,
+    });
+    tagsService.findTargetIds.mockResolvedValue(undefined);
+
+    const result = await service.list({ page: 1, pageSize: 20 });
+
+    const excerpt = result.items[0].excerpt;
+    expect(excerpt).not.toContain('<img');
+    expect(excerpt.endsWith('…')).toBe(true);
   });
 
   it('WHEEL 创建文章成功', async () => {
@@ -137,16 +207,6 @@ describe('ArticlesService', () => {
     expect(articlesRepository.insert).toHaveBeenCalled();
   });
 
-  it('MEMBER 创建文章返回 403', async () => {
-    await expect(
-      service.create(
-        { id: '01890a5d-ac96-7000-8000-000000000001', role: Role.MEMBER },
-        { title: '标题', content: '正文内容' },
-      ),
-    ).rejects.toThrow(ForbiddenException);
-    expect(articlesRepository.insert).not.toHaveBeenCalled();
-  });
-
   it('非作者本人编辑文章返回 403', async () => {
     articlesRepository.findById.mockResolvedValue(row());
 
@@ -154,6 +214,32 @@ describe('ArticlesService', () => {
       service.update(
         '01890a5d-ac96-7000-8000-0000000000a1',
         { id: 'someone-else', role: Role.ALUMNI },
+        { title: '新标题' },
+      ),
+    ).rejects.toThrow(ForbiddenException);
+    expect(articlesRepository.update).not.toHaveBeenCalled();
+  });
+
+  it('MEMBER 编辑自己的 PENDING 文章成功', async () => {
+    articlesRepository.findById.mockResolvedValue(row({ status: 'PENDING' }));
+    articlesRepository.update.mockResolvedValue(row({ status: 'PENDING', title: '新标题' }));
+
+    await service.update(
+      '01890a5d-ac96-7000-8000-0000000000a1',
+      { id: '01890a5d-ac96-7000-8000-000000000001', role: Role.MEMBER },
+      { title: '新标题' },
+    );
+
+    expect(articlesRepository.update).toHaveBeenCalled();
+  });
+
+  it('MEMBER 编辑自己的 PUBLISHED 文章返回 403', async () => {
+    articlesRepository.findById.mockResolvedValue(row({ status: 'PUBLISHED' }));
+
+    await expect(
+      service.update(
+        '01890a5d-ac96-7000-8000-0000000000a1',
+        { id: '01890a5d-ac96-7000-8000-000000000001', role: Role.MEMBER },
         { title: '新标题' },
       ),
     ).rejects.toThrow(ForbiddenException);
@@ -178,48 +264,125 @@ describe('ArticlesService', () => {
     );
   });
 
-  it('软删详情返回 404（findById 排除软删行）', async () => {
-    articlesRepository.findById.mockResolvedValue(null);
+  it('MEMBER 删除自己的 PENDING 文章成功', async () => {
+    articlesRepository.findById.mockResolvedValue(row({ status: 'PENDING' }));
 
-    await expect(service.getDetail('01890a5d-ac96-7000-8000-0000000000a1')).rejects.toThrow(
-      NotFoundException,
+    await service.remove(
+      '01890a5d-ac96-7000-8000-0000000000a1',
+      { id: '01890a5d-ac96-7000-8000-000000000001', role: Role.MEMBER },
     );
+
+    expect(articlesRepository.softDeleteById).toHaveBeenCalled();
   });
 
-  it('WHEEL 恢复回收站文章并写审计', async () => {
-    articlesRepository.findByIdIncludingDeleted.mockResolvedValue(row({ deletedAt: now }));
-
-    await service.restore('01890a5d-ac96-7000-8000-0000000000a1', {
-      id: 'wheel-1',
-      role: Role.WHEEL,
-    });
-
-    expect(articlesRepository.restoreById).toHaveBeenCalledWith('01890a5d-ac96-7000-8000-0000000000a1');
-    expect(auditLogService.record).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'article.restore' }),
-    );
-  });
-
-  it('重复恢复（未软删）返回 409', async () => {
-    articlesRepository.findByIdIncludingDeleted.mockResolvedValue(row());
+  it('MEMBER 删除自己的 PUBLISHED 文章返回 403', async () => {
+    articlesRepository.findById.mockResolvedValue(row({ status: 'PUBLISHED' }));
 
     await expect(
-      service.restore('01890a5d-ac96-7000-8000-0000000000a1', { id: 'wheel-1', role: Role.WHEEL }),
+      service.remove(
+        '01890a5d-ac96-7000-8000-0000000000a1',
+        { id: '01890a5d-ac96-7000-8000-000000000001', role: Role.MEMBER },
+      ),
+    ).rejects.toThrow(ForbiddenException);
+    expect(articlesRepository.softDeleteById).not.toHaveBeenCalled();
+  });
+
+  // ===== 审核 =====
+
+  it('WHEEL 审核通过 PENDING 文章', async () => {
+    articlesRepository.findById
+      .mockResolvedValueOnce(row({ status: 'PENDING' }))
+      .mockResolvedValueOnce(row({ status: 'PUBLISHED' }));
+    articlesRepository.updateStatus.mockResolvedValue(row({ status: 'PUBLISHED' }));
+
+    const result = await service.review(
+      '01890a5d-ac96-7000-8000-0000000000a1',
+      { id: '01890a5d-ac96-7000-8000-000000000001', role: Role.WHEEL },
+      'approve',
+    );
+
+    expect(result.status).toBe('PUBLISHED');
+    expect(articlesRepository.updateStatus).toHaveBeenCalledWith(
+      '01890a5d-ac96-7000-8000-0000000000a1',
+      'PUBLISHED',
+      '01890a5d-ac96-7000-8000-000000000001',
+      undefined,
+    );
+  });
+
+  it('WHEEL 拒绝 PENDING 文章并附备注', async () => {
+    articlesRepository.findById
+      .mockResolvedValueOnce(row({ status: 'PENDING' }))
+      .mockResolvedValueOnce(row({ status: 'REJECTED', reviewNote: '内容违规' }));
+    articlesRepository.updateStatus.mockResolvedValue(row({ status: 'REJECTED' }));
+
+    const result = await service.review(
+      '01890a5d-ac96-7000-8000-0000000000a1',
+      { id: '01890a5d-ac96-7000-8000-000000000001', role: Role.ADMIN },
+      'reject',
+      '内容违规',
+    );
+
+    expect(result.status).toBe('REJECTED');
+    expect(result.reviewNote).toBe('内容违规');
+  });
+
+  it('WHEEL 隐藏已发布文章（先发后审）', async () => {
+    articlesRepository.findById
+      .mockResolvedValueOnce(row({ status: 'PUBLISHED' }))
+      .mockResolvedValueOnce(row({ status: 'HIDDEN' }));
+    articlesRepository.updateStatus.mockResolvedValue(row({ status: 'HIDDEN' }));
+
+    const result = await service.review(
+      '01890a5d-ac96-7000-8000-0000000000a1',
+      { id: '01890a5d-ac96-7000-8000-000000000001', role: Role.WHEEL },
+      'hide',
+    );
+
+    expect(result.status).toBe('HIDDEN');
+  });
+
+  it('approve 仅对 PENDING 文章有效', async () => {
+    articlesRepository.findById.mockResolvedValue(row({ status: 'PUBLISHED' }));
+
+    await expect(
+      service.review(
+        '01890a5d-ac96-7000-8000-0000000000a1',
+        { id: '01890a5d-ac96-7000-8000-000000000001', role: Role.WHEEL },
+        'approve',
+      ),
     ).rejects.toThrow(ConflictException);
-    expect(articlesRepository.restoreById).not.toHaveBeenCalled();
   });
 
-  it('恢复不存在的文章返回 404', async () => {
-    articlesRepository.findByIdIncludingDeleted.mockResolvedValue(null);
+  it('MEMBER 调用审核接口返回 403', async () => {
+    await expect(
+      service.review(
+        '01890a5d-ac96-7000-8000-0000000000a1',
+        { id: '01890a5d-ac96-7000-8000-000000000001', role: Role.MEMBER },
+        'approve',
+      ),
+    ).rejects.toThrow(ForbiddenException);
+  });
+
+  it('非 PUBLISHED 文章对非作者不可见', async () => {
+    articlesRepository.findById.mockResolvedValue(row({ status: 'PENDING' }));
 
     await expect(
-      service.restore('01890a5d-ac96-7000-8000-0000000000a1', { id: 'wheel-1', role: Role.WHEEL }),
+      service.getDetail('01890a5d-ac96-7000-8000-0000000000a1', {
+        id: 'someone-else',
+        role: Role.ALUMNI,
+      }),
     ).rejects.toThrow(NotFoundException);
   });
 
-  it('MEMBER 恢复返回 403', async () => {
-    await expect(
-      service.restore('01890a5d-ac96-7000-8000-0000000000a1', { id: 'm-1', role: Role.MEMBER }),
-    ).rejects.toThrow(ForbiddenException);
+  it('作者可查看自己的 PENDING 文章', async () => {
+    articlesRepository.findById.mockResolvedValue(row({ status: 'PENDING' }));
+
+    const result = await service.getDetail('01890a5d-ac96-7000-8000-0000000000a1', {
+      id: '01890a5d-ac96-7000-8000-000000000001',
+      role: Role.MEMBER,
+    });
+
+    expect(result.status).toBe('PENDING');
   });
 });

@@ -4,6 +4,7 @@ import { verify } from 'argon2';
 import { isEmail, isMobilePhone } from 'class-validator';
 import { Role } from '../../common/decorators/roles.decorator';
 import { CurrentAuthUser } from '../../common/decorators/current-user.decorator';
+import { Page } from '../../common/dto/page';
 import { requireRole } from '../../common/permissions';
 import { REFRESH_TOKEN_STORE, RefreshTokenStore } from '../../db/redis';
 import { UserStatus } from '../../db/schema';
@@ -13,7 +14,7 @@ import { TagsService } from '../tags/tags.service';
 import { UploadsService, UploadedFileInput } from '../storage/uploads.service';
 import { ChangeIdentifierDto } from './dto/change-identifier.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
-import { UsersRepository, UserRow } from './users.repository';
+import { ActivityParts, PinnedTarget, UsersRepository, UserRow } from './users.repository';
 import {
   AdminUserPage,
   AdminUserView,
@@ -22,6 +23,9 @@ import {
   UserAuthRecord,
   UserPublic,
   UserSelf,
+  UserProfileView,
+  ActivityView,
+  ProfileReplyView,
 } from './users.views';
 
 function isUniqueViolation(error: unknown): boolean {
@@ -511,4 +515,139 @@ export class UsersService {
     cutoff.setFullYear(cutoff.getFullYear() - 4);
     return this.usersRepository.promoteMembersCreatedBefore(cutoff);
   }
+
+  // ===== 个人主页 =====
+
+  async getProfile(id: string, viewer: CurrentAuthUser): Promise<UserProfileView> {
+    const row = await this.usersRepository.findById(id);
+    if (!row) {
+      throw new NotFoundException('用户不存在');
+    }
+    const isSelf = viewer.id === id;
+    if (viewer.role === Role.VISITOR && !isSelf) {
+      throw new ForbiddenException('无权访问该资源');
+    }
+
+    const [stats, topTags, targets] = await Promise.all([
+      this.usersRepository.getProfileStats(id),
+      this.usersRepository.getProfileTopTags(id, 10),
+      this.usersRepository.findPinnedTargets(row.pinnedItems ?? []),
+    ]);
+
+    const targetByKey = new Map(targets.map((t) => [`${t.type}:${t.id}`, t]));
+    const pinnedItems = (row.pinnedItems ?? [])
+      .map((item) => targetByKey.get(`${item.type}:${item.id}`))
+      .filter((t): t is PinnedTarget => Boolean(t))
+      .map((t) => ({ type: t.type, id: t.id, title: t.title, url: t.url }));
+
+    const profile: UserProfileView = {
+      id: row.id,
+      nickname: row.nickname,
+      avatarUrl: row.avatarUrl,
+      role: row.role as Role,
+      bio: row.bio,
+      profileReadme: row.profileReadme,
+      createdAt: row.createdAt.toISOString(),
+      stats,
+      topTags,
+      pinnedItems,
+      isSelf,
+    };
+    if (isSelf) {
+      if (row.email) profile.email = row.email;
+      if (row.phone) profile.phone = row.phone;
+    }
+    return profile;
+  }
+
+  async updateProfilePage(
+    userId: string,
+    dto: {
+      bio?: string | null;
+      profileReadme?: string | null;
+      pinnedItems?: { type: string; id: string }[];
+    },
+  ): Promise<void> {
+    if (dto.bio !== undefined && dto.bio !== null && dto.bio.length > 100) {
+      throw new BadRequestException('bio 不能超过 100 个字符');
+    }
+    if (dto.profileReadme !== undefined && dto.profileReadme !== null && dto.profileReadme.length > 10000) {
+      throw new BadRequestException('个人介绍不能超过 10000 个字符');
+    }
+    if (dto.pinnedItems !== undefined) {
+      if (dto.pinnedItems.length > 6) {
+        throw new BadRequestException('置顶内容不能超过 6 项');
+      }
+      const keys = new Set(dto.pinnedItems.map((i) => `${i.type}:${i.id}`));
+      if (keys.size !== dto.pinnedItems.length) {
+        throw new BadRequestException('置顶内容不能重复');
+      }
+      const targets = await this.usersRepository.findPinnedTargets(dto.pinnedItems);
+      const targetByKey = new Map(targets.map((t) => [`${t.type}:${t.id}`, t]));
+      for (const item of dto.pinnedItems) {
+        const target = targetByKey.get(`${item.type}:${item.id}`);
+        if (!target || target.ownerId !== userId) {
+          throw new BadRequestException('置顶内容不存在或不属于本人');
+        }
+      }
+    }
+    const row = await this.usersRepository.updateProfilePage(userId, dto);
+    if (!row) {
+      throw new NotFoundException('用户不存在');
+    }
+  }
+
+  async getActivity(id: string, viewer: CurrentAuthUser): Promise<ActivityView> {
+    const isSelf = viewer.id === id;
+    if (viewer.role === Role.VISITOR && !isSelf) {
+      throw new ForbiddenException('无权访问该资源');
+    }
+    const since = new Date();
+    since.setFullYear(since.getFullYear() - 1);
+    const parts = await this.usersRepository.getActivityParts(id, since);
+    return { days: mergeActivityParts(parts) };
+  }
+
+  /** 个人主页 · 回复 Tab：本人或 MEMBER+ 互访可见，VISITOR 仅看自己 */
+  async getReplies(
+    id: string,
+    viewer: CurrentAuthUser,
+    page: number,
+    pageSize: number,
+  ): Promise<Page<ProfileReplyView>> {
+    const isSelf = viewer.id === id;
+    if (viewer.role === Role.VISITOR && !isSelf) {
+      throw new ForbiddenException('无权访问该资源');
+    }
+    const row = await this.usersRepository.findById(id);
+    if (!row) {
+      throw new NotFoundException('用户不存在');
+    }
+    const { rows, total } = await this.usersRepository.listRepliesByAuthor(id, page, pageSize);
+    return {
+      items: rows.map((r) => ({
+        id: r.id,
+        issueId: r.issueId,
+        issueTitle: r.issueTitle,
+        content: r.content,
+        createdAt: r.createdAt.toISOString(),
+      })),
+      total,
+      page,
+      pageSize,
+    };
+  }
+}
+
+/** activity 聚合口径：五类事件按日求和，按日期升序 */
+export function mergeActivityParts(parts: ActivityParts): { date: string; count: number }[] {
+  const merged = new Map<string, number>();
+  for (const days of Object.values(parts)) {
+    for (const d of days) {
+      merged.set(d.date, (merged.get(d.date) ?? 0) + d.count);
+    }
+  }
+  return [...merged.entries()]
+    .map(([date, count]) => ({ date, count }))
+    .sort((a, b) => a.date.localeCompare(b.date));
 }

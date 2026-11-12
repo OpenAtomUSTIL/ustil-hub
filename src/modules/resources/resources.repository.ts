@@ -13,6 +13,7 @@ export class ResourcesRepository {
     filters: {
       category?: ResourceCategory;
       keyword?: string;
+      creatorId?: string;
       tagTargetIds?: string[];
     },
   ): Promise<{ rows: ResourceRow[]; total: number }> {
@@ -20,6 +21,9 @@ export class ResourcesRepository {
     const conditions: (SQL | undefined)[] = [isNull(resources.deletedAt)];
     if (filters.category) {
       conditions.push(eq(resources.category, filters.category));
+    }
+    if (filters.creatorId) {
+      conditions.push(eq(resources.creatorId, filters.creatorId));
     }
     const trimmed = filters.keyword?.trim();
     if (trimmed) {

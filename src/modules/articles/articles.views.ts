@@ -6,6 +6,7 @@ export interface ArticleListItem {
   excerpt: string;
   tags: string[];
   author: UserPublic;
+  status: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -16,6 +17,8 @@ export interface ArticleDetail {
   content: string;
   tags: string[];
   author: UserPublic;
+  status: string;
+  reviewNote: string | null;
   createdAt: string;
   updatedAt: string;
 }

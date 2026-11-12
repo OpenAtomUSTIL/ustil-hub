@@ -98,6 +98,7 @@ export class IssuesService {
     const { rows, total } = await this.issuesRepository.list(query.page, query.pageSize, {
       status: query.status,
       keyword: query.keyword,
+      authorId: query.authorId,
       tagTargetIds,
     });
     const replyCounts = await this.issuesRepository.countReplies(rows.map((row) => row.id));

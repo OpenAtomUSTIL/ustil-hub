@@ -85,6 +85,20 @@
       "when": 1794401745455,
       "tag": "0011_admin_files_pagination_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1794479773202,
+      "tag": "0012_article_review_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1794479800333,
+      "tag": "0013_user_profile_page",
+      "breakpoints": true
     }
   ]
 }

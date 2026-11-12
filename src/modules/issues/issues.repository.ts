@@ -17,12 +17,16 @@ export class IssuesRepository {
     filters: {
       status?: IssueStatus;
       keyword?: string;
+      authorId?: string;
       tagTargetIds?: string[];
     },
   ): Promise<{ rows: IssueRow[]; total: number }> {
     const conditions = [];
     if (filters.status) {
       conditions.push(eq(issues.status, filters.status));
+    }
+    if (filters.authorId) {
+      conditions.push(eq(issues.authorId, filters.authorId));
     }
     const trimmed = filters.keyword?.trim();
     if (trimmed) {

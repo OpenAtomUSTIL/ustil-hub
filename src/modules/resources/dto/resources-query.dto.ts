@@ -1,4 +1,4 @@
-import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsIn, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 import { ResourceCategory } from '../../../db/schema';
 
@@ -11,6 +11,10 @@ export class ResourcesQueryDto extends PaginationQueryDto {
   @IsString({ message: 'keyword 必须是字符串' })
   @MaxLength(100, { message: 'keyword 过长' })
   keyword?: string;
+
+  @IsOptional()
+  @IsUUID(undefined, { message: 'creatorId 必须是 uuid' })
+  creatorId?: string;
 
   @IsOptional()
   @IsString({ message: 'tag 必须是字符串' })
