@@ -99,6 +99,7 @@ export class ResourcesService {
   }
 
   async update(id: string, user: CurrentAuthUser, dto: UpdateResourceDto): Promise<ResourceItem> {
+    requireRole(user, Role.WHEEL, Role.ADMIN);
     const row = await this.resourcesRepository.findById(id);
     if (!row) {
       throw new NotFoundException('资源不存在');
@@ -127,6 +128,7 @@ export class ResourcesService {
   }
 
   async remove(id: string, user: CurrentAuthUser): Promise<void> {
+    requireRole(user, Role.WHEEL, Role.ADMIN);
     const row = await this.resourcesRepository.findById(id);
     if (!row) {
       throw new NotFoundException('资源不存在');

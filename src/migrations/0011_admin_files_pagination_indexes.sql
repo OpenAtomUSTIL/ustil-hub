@@ -1,0 +1,2 @@
+CREATE INDEX "attachments_created_at_id_idx" ON "attachments" USING btree ("created_at" DESC NULLS FIRST,"id" DESC NULLS FIRST);--> statement-breakpoint
+CREATE INDEX "users_avatar_updated_at_id_idx" ON "users" USING btree ("updated_at" DESC NULLS FIRST,"id" DESC NULLS FIRST) WHERE "users"."avatar_url" like '/api/v1/storage/files/_%';

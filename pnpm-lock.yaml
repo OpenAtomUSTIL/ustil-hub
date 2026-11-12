@@ -12,7 +12,9 @@ overrides:
   minimatch: 11.0.5
 
 patchedDependencies:
-  deepmerge@4.3.1: 207ffbbc4badf5d62821e48f2c7b552260b0435fe878ccdf25c454104412626a
+  deepmerge@4.3.1:
+    hash: 207ffbbc4badf5d62821e48f2c7b552260b0435fe878ccdf25c454104412626a
+    path: patches/deepmerge@4.3.1.patch
 
 importers:
 

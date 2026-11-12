@@ -1,12 +1,30 @@
 import { Injectable } from '@nestjs/common';
-import { and, desc, eq, gte, ilike, inArray, isNotNull, like, lt, ne, or, sql } from 'drizzle-orm';
-import { db } from '../../db';
+import { and, desc, eq, gte, ilike, inArray, like, lt, ne, or, sql } from 'drizzle-orm';
+import { db, Database } from '../../db';
 import { UserStatus, users } from '../../db/schema';
 
 export type UserRow = typeof users.$inferSelect;
 
 @Injectable()
 export class UsersRepository {
+  /** 头像来源归用户模块所有；过滤空 key，确保列表与总数条件一致。 */
+  adminFileSource(connection: Pick<Database, 'select'>, keyword?: string) {
+    const trimmed = keyword?.trim();
+    return connection.select({
+      kind: sql<'ATTACHMENT' | 'AVATAR'>`'AVATAR'::text`.as('kind'),
+      id: users.id,
+      key: sql<string>`substring(${users.avatarUrl} from 23)`.as('key'),
+      fileName: sql<string>`substring(${users.avatarUrl} from 23)`.as('file_name'),
+      size: sql<number>`0::integer`.as('size'),
+      uploaderId: sql<string>`${users.id}`.as('uploader_id'),
+      email: users.email,
+      createdAt: sql`${users.updatedAt}`.mapWith(users.updatedAt).as('created_at'),
+    }).from(users).where(and(
+      like(users.avatarUrl, '/api/v1/storage/files/_%'),
+      trimmed ? ilike(users.avatarUrl, `%${trimmed}%`) : undefined,
+    ));
+  }
+
   async insert(row: {
     email: string | null;
     phone: string | null;
@@ -241,11 +259,11 @@ export class UsersRepository {
     return rows[0]?.count ?? 0;
   }
 
-  async clearAvatar(userId: string): Promise<UserRow | null> {
+  async clearAvatar(userId: string, expectedAvatarUrl: string): Promise<UserRow | null> {
     const rows = await db
       .update(users)
       .set({ avatarUrl: null })
-      .where(and(eq(users.id, userId), isNotNull(users.avatarUrl)))
+      .where(and(eq(users.id, userId), eq(users.avatarUrl, expectedAvatarUrl)))
       .returning();
     return rows[0] ?? null;
   }

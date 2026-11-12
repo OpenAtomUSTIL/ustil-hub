@@ -39,6 +39,11 @@
   ```
 - **时间**：一律 ISO 8601 UTC 字符串（`2026-11-09T03:04:10.212Z`）。
 - **校验**：全局 `ValidationPipe` 开启 `whitelist + forbidNonWhitelisted`，请求体中出现未声明字段直接 400。
+- **标题与昵称**：创建、更新时去除首尾空白后校验；纯空白返回 400，标题最长 200 字符、昵称最长 50 字符。
+- **标签**：`tags` 可省略，更新时 `[]` 表示清空；显式 `null` 返回 400。
+- **公告布尔值**：`pinned`、`notify` 可省略，必须是布尔值；`null` 或字符串 `"false"` 返回 400。
+- **作业输入时间**：`startAt`、`deadlineAt` 必须是带 `Z` 的 ISO 8601 UTC 字符串（秒必填，毫秒可选、最多 3 位）；数字时间戳、无时区时间及无效日历日期返回 400。
+- **资源地址**：创建、更新均只允许带协议的 HTTP / HTTPS 链接，FTP 等其他协议返回 400。
 - **文件上传**（头像、作业提交共用规则）：扩展名 + mime 双校验，白名单 `doc docx pdf png jpg jpeg zip`，单文件 ≤ 10MB（`UPLOAD_MAX_SIZE` 可配）。
 
 ### 角色（RBAC，五级）
@@ -666,7 +671,7 @@ TagView = { id: string; name: string; count: number }
 
 ### 11.9.1 文件内容预览 `GET /api/v1/admin/files/:id/content`
 
-- 权限：🛡️ `WHEEL`、`ADMIN`（附件与头像统一出口，不走提交归属限制，供后台文件管理预览）
+- 权限：🛡️ `WHEEL`、`ADMIN`。头像可供管理人员预览；作业附件中 ADMIN 可读取，WHEEL 仅可读取其本人发布作业的附件。未关联提交的附件仅 ADMIN 可读取。
 - 路径参数：`id`——`ATTACHMENT` 传附件 uuid；`AVATAR` 传 `avatar:<userId>`
 - 成功：`200`，返回文件字节流（`Content-Type` 按扩展名，`Content-Disposition: inline`，`Cache-Control: private, no-store`）
 - 失败：`400` id 非法；`404` 文件不存在

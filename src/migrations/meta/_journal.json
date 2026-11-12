@@ -78,6 +78,13 @@
       "when": 1794392138441,
       "tag": "0010_add_login_logs_presence_soft_delete",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1794401745455,
+      "tag": "0011_admin_files_pagination_indexes",
+      "breakpoints": true
     }
   ]
 }

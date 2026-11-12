@@ -1,3 +1,4 @@
+import { Transform } from 'class-transformer';
 import { IsNotEmpty, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { IsEmailOrPhone } from './is-email-or-phone';
 
@@ -10,6 +11,7 @@ export class RegisterDto {
   @MaxLength(128, { message: '密码长度不能超过 128 位' })
   password!: string;
 
+  @Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value)
   @IsString({ message: '昵称必须是字符串' })
   @IsNotEmpty({ message: '昵称不能为空' })
   @MaxLength(50, { message: '昵称不能超过 50 个字符' })

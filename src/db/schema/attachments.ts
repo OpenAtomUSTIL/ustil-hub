@@ -20,5 +20,6 @@ export const attachments = pgTable(
   (t) => [
     uniqueIndex('attachments_key_key').on(t.key),
     index('attachments_uploader_id_idx').on(t.uploaderId),
+    index('attachments_created_at_id_idx').on(t.createdAt.desc().nullsFirst(), t.id.desc().nullsFirst()),
   ],
 );

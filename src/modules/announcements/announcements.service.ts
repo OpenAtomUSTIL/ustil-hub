@@ -102,6 +102,7 @@ export class AnnouncementsService {
     user: CurrentAuthUser,
     dto: UpdateAnnouncementDto,
   ): Promise<AnnouncementItem> {
+    requireRole(user, Role.WHEEL, Role.ADMIN);
     const row = await this.announcementsRepository.findById(id);
     if (!row) {
       throw new NotFoundException('公告不存在');
@@ -128,6 +129,7 @@ export class AnnouncementsService {
   }
 
   async remove(id: string, user: CurrentAuthUser): Promise<void> {
+    requireRole(user, Role.WHEEL, Role.ADMIN);
     const row = await this.announcementsRepository.findById(id);
     if (!row) {
       throw new NotFoundException('公告不存在');

@@ -11,6 +11,7 @@ import { StorageModule } from '../storage/storage.module';
 import { UsersModule } from '../users/users.module';
 import { AdminApiRegistryController } from './admin-api-registry.controller';
 import { AdminFilesController } from './admin-files.controller';
+import { AdminFilesRepository } from './admin-files.repository';
 import { AdminFilesService } from './admin-files.service';
 import { AdminUsersController } from './admin-users.controller';
 import { ApiRegistryService } from './api-registry.service';
@@ -49,6 +50,7 @@ import { TrashService } from './trash.service';
     StatsService,
     SchedulerService,
     AdminFilesService,
+    AdminFilesRepository,
     TrashService,
     ApiRegistryService,
     DiscoveryService,

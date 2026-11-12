@@ -2,6 +2,8 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { validate as isUuid } from 'uuid';
 import { CurrentAuthUser } from '../../common/decorators/current-user.decorator';
 import { Role } from '../../common/decorators/roles.decorator';
+import { db } from '../../db';
+import { AdminFilesRepository } from './admin-files.repository';
 import { Page } from '../../common/dto/page';
 import { requireRole } from '../../common/permissions';
 import { AuditLogService } from '../audit/audit-log.service';
@@ -21,14 +23,15 @@ interface MergedEntry {
   id: string;
   fileName: string;
   createdAt: Date;
-  attachment?: AttachmentRow;
-  avatar?: AvatarFileRef;
+  attachment?: Pick<AttachmentRow, 'id' | 'key' | 'originalName' | 'size' | 'uploaderId' | 'createdAt'>;
+  avatar?: Omit<AvatarFileRef, 'nickname'>;
 }
 
 /** 管理后台文件管理：附件 + 用户头像文件（合成 AVATAR 条目） */
 @Injectable()
 export class AdminFilesService {
   constructor(
+    private readonly filesRepository: AdminFilesRepository,
     private readonly uploadsService: UploadsService,
     private readonly usersService: UsersService,
     private readonly assignmentsService: AssignmentsService,
@@ -40,42 +43,33 @@ export class AdminFilesService {
     return IMAGE_EXTS.has(ext);
   }
 
-  private mergeByCreatedAt(entries: MergedEntry[]): MergedEntry[] {
-    return entries.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-  }
-
   async list(query: AdminFilesQueryDto, actor: CurrentAuthUser): Promise<Page<FileItem>> {
     requireRole(actor, Role.WHEEL, Role.ADMIN);
     const offset = (query.page - 1) * query.pageSize;
-    const windowSize = offset + query.pageSize;
-    const wantAttachment = !query.kind || query.kind === 'ATTACHMENT';
-    const wantAvatar = !query.kind || query.kind === 'AVATAR';
-
-    const [attachmentResult, avatarResult] = await Promise.all([
-      wantAttachment
-        ? this.uploadsService.listForAdminWindow({ keyword: query.keyword, limit: windowSize })
-        : { rows: [] as AttachmentRow[], total: 0 },
-      wantAvatar
-        ? this.usersService.listAvatarFilesForAdmin({ keyword: query.keyword, limit: windowSize })
-        : { rows: [] as AvatarFileRef[], total: 0 },
-    ]);
-
-    const entries = this.mergeByCreatedAt([
-      ...attachmentResult.rows.map((row) => ({
-        kind: 'ATTACHMENT' as const,
-        id: row.id,
-        fileName: row.originalName,
-        createdAt: row.createdAt,
-        attachment: row,
-      })),
-      ...avatarResult.rows.map((ref) => ({
-        kind: 'AVATAR' as const,
-        id: `${AVATAR_ID_PREFIX}${ref.userId}`,
-        fileName: ref.key,
-        createdAt: ref.updatedAt,
-        avatar: ref,
-      })),
-    ]).slice(offset, offset + query.pageSize);
+    if (!Number.isSafeInteger(offset) || offset < 0 ||
+        !Number.isSafeInteger(offset + query.pageSize)) {
+      throw new BadRequestException('分页范围过大');
+    }
+    // 同一快照读取列表和总数，不锁定写入；事务只覆盖数据库分页查询。
+    const result = await db.transaction((tx) => this.filesRepository.list(tx, {
+      attachment: this.uploadsService.adminFileSource(tx, query.keyword),
+      avatar: this.usersService.adminFileSource(tx, query.keyword),
+    }, { kind: query.kind, offset, pageSize: query.pageSize }), {
+      isolationLevel: 'repeatable read', accessMode: 'read only',
+    });
+    const entries: MergedEntry[] = result.rows.map((row) => row.kind === 'ATTACHMENT' ? {
+      kind: row.kind, id: row.id, fileName: row.fileName, createdAt: row.createdAt,
+      attachment: {
+        id: row.id, key: row.key, originalName: row.fileName, size: row.size,
+        uploaderId: row.uploaderId, createdAt: row.createdAt,
+      },
+    } : {
+      kind: row.kind, id: `${AVATAR_ID_PREFIX}${row.id}`,
+      fileName: row.key, createdAt: row.createdAt,
+      avatar: {
+        userId: row.id, key: row.key, email: row.email, updatedAt: row.createdAt,
+      },
+    });
 
     const attachmentIds = entries
       .filter((entry) => entry.attachment)
@@ -138,7 +132,7 @@ export class AdminFilesService {
 
     return {
       items,
-      total: attachmentResult.total + avatarResult.total,
+      total: result.total,
       page: query.page,
       pageSize: query.pageSize,
     };
@@ -153,7 +147,7 @@ export class AdminFilesService {
     await this.removeAttachment(id, actor);
   }
 
-  /** 管理端文件内容预览（附件与头像统一出口，WHEEL/ADMIN 均可读，绕开提交归属限制） */
+  /** 头像供管理人员查看；作业附件仍须遵循提交归属权限。 */
   async resolveContent(
     id: string,
     actor: CurrentAuthUser,
@@ -177,7 +171,8 @@ export class AdminFilesService {
     if (!row) {
       throw new NotFoundException('文件不存在');
     }
-    return this.uploadsService.readAttachment(row.id);
+    if (actor.role === Role.ADMIN) return this.uploadsService.readAttachment(row.id);
+    return this.assignmentsService.downloadAttachment(row.id, actor);
   }
 
   private async removeAvatar(userId: string, actor: CurrentAuthUser): Promise<void> {

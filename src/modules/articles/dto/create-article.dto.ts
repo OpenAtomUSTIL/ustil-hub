@@ -1,7 +1,9 @@
+import { Transform } from 'class-transformer';
 import { IsNotEmpty, IsString, MaxLength } from 'class-validator';
 import { TagsField } from '../../../common/dto/tags-field';
 
 export class CreateArticleDto {
+  @Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value)
   @IsString({ message: '标题必须是字符串' })
   @IsNotEmpty({ message: '标题不能为空' })
   @MaxLength(200, { message: '标题不能超过 200 个字符' })

@@ -1,3 +1,4 @@
+import { Database } from '../../db';
 import { Inject, Injectable, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { v7 as uuidv7 } from 'uuid';
 import { AppConfig, configuration } from '../../config/configuration';
@@ -83,6 +84,10 @@ export class UploadsService {
   }
 
   // 作业提交附件：校验 → 落盘 → 记录 attachments
+  adminFileSource(connection: Pick<Database, 'select'>, keyword?: string) {
+    return this.attachmentsRepository.adminFileSource(connection, keyword);
+  }
+
   async saveAssignmentFile(file: UploadedFileInput, uploaderId: string): Promise<AttachmentView> {
     const ext = this.validate(file, ASSIGNMENT_ALLOWED);
     const key = `assignment-${this.buildKey(ext)}`;

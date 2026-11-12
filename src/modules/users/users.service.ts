@@ -1,3 +1,4 @@
+import { Database } from '../../db';
 import { Inject, Injectable, BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { verify } from 'argon2';
 import { isEmail, isMobilePhone } from 'class-validator';
@@ -70,6 +71,10 @@ export class UsersService {
       avatarUrl: row.avatarUrl,
       role: row.role as Role,
     };
+  }
+
+  adminFileSource(connection: Pick<Database, 'select'>, keyword?: string) {
+    return this.usersRepository.adminFileSource(connection, keyword);
   }
 
   async createUser(input: {
@@ -436,7 +441,9 @@ export class UsersService {
     if (!key) {
       return null;
     }
-    await this.usersRepository.clearAvatar(userId);
+    if (!row.avatarUrl) return null;
+    const cleared = await this.usersRepository.clearAvatar(userId, row.avatarUrl);
+    if (!cleared) throw new ConflictException('头像已变更，请刷新后重试');
     return { key };
   }
 

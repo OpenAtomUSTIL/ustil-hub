@@ -8,13 +8,19 @@ export class TagsService {
   constructor(private readonly tagsRepository: TagsRepository) {}
 
   // 校验并规范化标签：trim、小写、大小写不敏感去重；非法（空标签）400
-  normalizeTags(tags: string[] | undefined): string[] | undefined {
+  normalizeTags(tags: unknown): string[] | undefined {
     if (tags === undefined) {
       return undefined;
+    }
+    if (!Array.isArray(tags)) {
+      throw new BadRequestException('tags 必须是数组');
     }
     const seen = new Set<string>();
     const names: string[] = [];
     for (const item of tags) {
+      if (typeof item !== 'string') {
+        throw new BadRequestException('tags 项必须是字符串');
+      }
       const name = item.trim().toLowerCase();
       if (!name) {
         throw new BadRequestException('标签不能为空');

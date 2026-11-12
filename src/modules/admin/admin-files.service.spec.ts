@@ -5,7 +5,11 @@ import { AuditLogService } from '../audit/audit-log.service';
 import { AssignmentsService } from '../assignments/assignments.service';
 import { UploadsService } from '../storage/uploads.service';
 import { UsersService } from '../users/users.service';
+import { db } from '../../db';
+import { AdminFilesRepository } from './admin-files.repository';
 import { AdminFilesService } from './admin-files.service';
+
+jest.mock('../../db', () => ({ db: { transaction: jest.fn() } }));
 
 const now = new Date('2026-01-01T00:00:00.000Z');
 
@@ -22,7 +26,9 @@ const attachmentRow = {
 describe('AdminFilesService', () => {
   let service: AdminFilesService;
 
+  const filesRepository = { list: jest.fn() };
   const uploadsService = {
+    adminFileSource: jest.fn(),
     listForAdminWindow: jest.fn(),
     getAttachmentRow: jest.fn(),
     removeAttachment: jest.fn(),
@@ -32,6 +38,7 @@ describe('AdminFilesService', () => {
     readAttachment: jest.fn(),
   };
   const usersService = {
+    adminFileSource: jest.fn(),
     listAvatarFilesForAdmin: jest.fn(),
     deleteAvatarFileForAdmin: jest.fn(),
     getAvatarFileForAdmin: jest.fn(),
@@ -40,6 +47,7 @@ describe('AdminFilesService', () => {
   };
   const assignmentsService = {
     listUsedAttachmentIds: jest.fn(),
+    downloadAttachment: jest.fn(),
   };
   const auditLogService = {
     record: jest.fn(),
@@ -50,6 +58,7 @@ describe('AdminFilesService', () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
         AdminFilesService,
+        { provide: AdminFilesRepository, useValue: filesRepository },
         { provide: UploadsService, useValue: uploadsService },
         { provide: UsersService, useValue: usersService },
         { provide: AssignmentsService, useValue: assignmentsService },
@@ -57,6 +66,8 @@ describe('AdminFilesService', () => {
       ],
     }).compile();
     service = moduleRef.get(AdminFilesService);
+    filesRepository.list.mockResolvedValue({ rows: [], total: 0 });
+    jest.mocked(db.transaction).mockImplementation(async (callback) => callback(db as never));
     uploadsService.listForAdminWindow.mockResolvedValue({ rows: [], total: 0 });
     usersService.listAvatarFilesForAdmin.mockResolvedValue({ rows: [], total: 0 });
     usersService.findAvatarReferencedKeys.mockResolvedValue(new Set());
@@ -131,19 +142,11 @@ describe('AdminFilesService', () => {
   });
 
   it('列表合并 ATTACHMENT 与 AVATAR 条目并标注 isImage/referenced', async () => {
-    uploadsService.listForAdminWindow.mockResolvedValue({ rows: [attachmentRow], total: 1 });
-    usersService.listAvatarFilesForAdmin.mockResolvedValue({
-      rows: [
-        {
-          userId: '01890a5d-ac96-7000-8000-000000000001',
-          email: 'a@example.com',
-          nickname: '甲',
-          key: '01890a5d-ac96-7000-8000-0000000000k2.png',
-          updatedAt: now,
-        },
-      ],
-      total: 1,
-    });
+    filesRepository.list.mockResolvedValue({ rows: [
+      { kind: 'ATTACHMENT', ...attachmentRow, fileName: attachmentRow.originalName, email: null },
+      { kind: 'AVATAR', id: attachmentRow.uploaderId, uploaderId: attachmentRow.uploaderId,
+        key: 'avatar.png', fileName: 'avatar.png', size: 0, email: 'a@example.com', createdAt: now },
+    ], total: 2 });
     assignmentsService.listUsedAttachmentIds.mockResolvedValue(new Set([attachmentRow.id]));
     usersService.findAvatarReferencedKeys.mockResolvedValue(new Set());
     usersService.getEmailsByIds.mockResolvedValue(
@@ -178,12 +181,13 @@ describe('AdminFilesService', () => {
 
   it('resolveContent：附件与头像均可取回内容（正常路径）', async () => {
     uploadsService.getAttachmentRow.mockResolvedValue(attachmentRow);
-    uploadsService.readAttachment.mockResolvedValue({ data: Buffer.from('x'), contentType: 'application/pdf' });
+    assignmentsService.downloadAttachment.mockResolvedValue({ data: Buffer.from('x'), contentType: 'application/pdf' });
 
     await expect(
       service.resolveContent(attachmentRow.id, { id: 'wheel-1', role: Role.WHEEL }),
     ).resolves.toEqual({ data: Buffer.from('x'), contentType: 'application/pdf' });
-    expect(uploadsService.readAttachment).toHaveBeenCalledWith(attachmentRow.id);
+    expect(assignmentsService.downloadAttachment).toHaveBeenCalledWith(attachmentRow.id, { id: 'wheel-1', role: Role.WHEEL });
+    expect(uploadsService.readAttachment).not.toHaveBeenCalled();
     expect(uploadsService.resolveFile).not.toHaveBeenCalled();
 
     uploadsService.resolveFile.mockResolvedValue({ data: Buffer.from('x'), contentType: 'image/png' });

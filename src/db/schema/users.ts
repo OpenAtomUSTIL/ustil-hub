@@ -42,6 +42,8 @@ export const users = pgTable(
   (t) => [
     uniqueIndex('users_email_key').on(t.email),
     index('users_last_seen_at_idx').on(t.lastSeenAt),
+    index('users_avatar_updated_at_id_idx').on(t.updatedAt.desc().nullsFirst(), t.id.desc().nullsFirst())
+      .where(sql`${t.avatarUrl} like '/api/v1/storage/files/_%'`),
     uniqueIndex('users_phone_key').on(t.phone),
     index('users_role_idx').on(t.role),
     index('users_status_idx').on(t.status),

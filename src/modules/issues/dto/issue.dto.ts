@@ -1,9 +1,11 @@
+import { Transform } from 'class-transformer';
 import { IsIn, IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 import { TagsField } from '../../../common/dto/tags-field';
 import { IssueStatus } from '../../../db/schema';
 
 export class CreateIssueDto {
+  @Transform(({ value }: { value: unknown }) => typeof value === 'string' ? value.trim() : value)
   @IsString({ message: '标题必须是字符串' })
   @IsNotEmpty({ message: '标题不能为空' })
   @MaxLength(200, { message: '标题不能超过 200 个字符' })

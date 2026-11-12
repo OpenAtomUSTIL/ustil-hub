@@ -1,12 +1,28 @@
 import { Injectable } from '@nestjs/common';
 import { desc, eq, ilike, inArray, sql } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, Database } from '../../db';
 import { attachments } from '../../db/schema';
 
 export type AttachmentRow = typeof attachments.$inferSelect;
 
 @Injectable()
 export class AttachmentsRepository {
+  /** 仅暴露文件盘点所需字段，供后台在数据库内组合分页。 */
+  adminFileSource(connection: Pick<Database, 'select'>, keyword?: string) {
+    const trimmed = keyword?.trim();
+    return connection.select({
+      kind: sql<'ATTACHMENT' | 'AVATAR'>`'ATTACHMENT'::text`.as('kind'),
+      id: attachments.id,
+      key: attachments.key,
+      fileName: sql<string>`${attachments.originalName}`.as('file_name'),
+      size: attachments.size,
+      uploaderId: attachments.uploaderId,
+      email: sql<string | null>`null::text`.as('email'),
+      createdAt: attachments.createdAt,
+    }).from(attachments)
+      .where(trimmed ? ilike(attachments.originalName, `%${trimmed}%`) : undefined);
+  }
+
   async insert(row: {
     key: string;
     originalName: string;
