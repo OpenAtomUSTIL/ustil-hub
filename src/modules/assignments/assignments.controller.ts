@@ -38,7 +38,7 @@ export class AssignmentsController {
   }
 
   @Get(':id')
-  detail(@Param('id', uuidParamPipe) id: string, @CurrentUser() user: CurrentAuthUser) {
+  detail(@Param('id') id: string, @CurrentUser() user: CurrentAuthUser) {
     return this.assignmentsService.getDetail(id, user);
   }
 

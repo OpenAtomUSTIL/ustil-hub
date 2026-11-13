@@ -4,6 +4,7 @@ import { Role } from '../../common/decorators/roles.decorator';
 import { Page } from '../../common/dto/page';
 import { requireRole } from '../../common/permissions';
 import { IssueStatus, TagTargetType } from '../../db/schema';
+import { uniqueSlug } from '../../common/utils/identifiers';
 import { AuditLogService } from '../audit/audit-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { TagsService } from '../tags/tags.service';
@@ -48,6 +49,7 @@ export class IssuesService {
   ): IssueListItem {
     return {
       id: row.id,
+      slug: row.slug,
       title: row.title,
       tags,
       status: row.status,
@@ -132,11 +134,11 @@ export class IssuesService {
   }
 
   async getDetail(id: string): Promise<IssueDetail> {
-    const row = await this.issuesRepository.findById(id);
+    const row = await this.issuesRepository.findByIdOrSlug(id);
     if (!row) {
       throw new NotFoundException('问题不存在');
     }
-    const replies = await this.issuesRepository.findReplies(id);
+    const replies = await this.issuesRepository.findReplies(row.id);
     return this.detailOf(row, replies);
   }
 
@@ -145,8 +147,10 @@ export class IssuesService {
       throw new ForbiddenException('无权访问该资源');
     }
     const names = this.tagsService.normalizeTags(dto.tags) ?? [];
+    const slug = await uniqueSlug(dto.title, (s) => this.issuesRepository.slugExists(s));
     const row = await this.issuesRepository.insert({
       title: dto.title,
+      slug,
       content: dto.content,
       authorId: user.id,
     });
@@ -176,7 +180,7 @@ export class IssuesService {
       await this.notificationsService.notifyUser(row.authorId, {
         type: 'ISSUE_REPLY',
         title: row.title,
-        link: `/issues/${row.id}`,
+        link: `/issues/${row.slug}`,
       });
     }
     const users = await this.usersByIds([user.id]);

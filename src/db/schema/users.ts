@@ -22,6 +22,8 @@ export const users = pgTable(
     phone: text('phone'),
     passwordHash: text('password_hash').notNull(),
     nickname: text('nickname').notNull(),
+    // 主页地址用 handle（不暴露裸 id）：2-32 位字母/数字/-/_，注册时由昵称生成，可在设置中改
+    username: text('username').notNull(),
     avatarUrl: text('avatar_url'),
     role: userRoleEnum('role').notNull().default('MEMBER'),
     status: userStatusEnum('status').notNull().default('ACTIVE'),
@@ -45,6 +47,7 @@ export const users = pgTable(
   },
   (t) => [
     uniqueIndex('users_email_key').on(t.email),
+    uniqueIndex('users_username_key').on(t.username),
     index('users_last_seen_at_idx').on(t.lastSeenAt),
     index('users_avatar_updated_at_id_idx').on(t.updatedAt.desc().nullsFirst(), t.id.desc().nullsFirst())
       .where(sql`${t.avatarUrl} like '/api/v1/storage/files/_%'`),

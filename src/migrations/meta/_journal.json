@@ -99,6 +99,20 @@
       "when": 1794479800333,
       "tag": "0013_user_profile_page",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1794509962408,
+      "tag": "0014_v4_follows_slug_username",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1794511382642,
+      "tag": "0015_user_username_history",
+      "breakpoints": true
     }
   ]
 }

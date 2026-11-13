@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { assignmentSubmissions, assignments } from '../../db/schema';
+import { isUuid } from '../../common/utils/identifiers';
 
 export type AssignmentRow = typeof assignments.$inferSelect;
 export type SubmissionRow = typeof assignmentSubmissions.$inferSelect;
@@ -24,8 +25,27 @@ export class AssignmentsRepository {
     return rows[0] ?? null;
   }
 
+  async slugExists(slug: string): Promise<boolean> {
+    const rows = await db
+      .select({ id: assignments.id })
+      .from(assignments)
+      .where(eq(assignments.slug, slug))
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  async findBySlug(slug: string): Promise<AssignmentRow | null> {
+    const rows = await db.select().from(assignments).where(eq(assignments.slug, slug)).limit(1);
+    return rows[0] ?? null;
+  }
+
+  async findByIdOrSlug(value: string): Promise<AssignmentRow | null> {
+    return isUuid(value) ? this.findById(value) : this.findBySlug(value);
+  }
+
   async insert(row: {
     title: string;
+    slug: string;
     description: string;
     publisherId: string;
     startAt: Date;

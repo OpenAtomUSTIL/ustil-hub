@@ -23,6 +23,6 @@ import { UploadsService } from './uploads.service';
       inject: [configuration.KEY],
     },
   ],
-  exports: [UploadsService],
+  exports: [UploadsService, STORAGE_SERVICE],
 })
 export class StorageModule {}

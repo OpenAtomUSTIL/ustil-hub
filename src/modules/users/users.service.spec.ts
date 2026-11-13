@@ -1,4 +1,9 @@
-import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { Role } from '../../common/decorators/roles.decorator';
 import { REFRESH_TOKEN_STORE } from '../../db/redis';
@@ -9,7 +14,7 @@ import { TagsService } from '../tags/tags.service';
 import { UploadsService } from '../storage/uploads.service';
 import { hashPassword } from '../auth/password';
 import { UsersRepository, UserRow } from './users.repository';
-import { UsersService } from './users.service';
+import { UsersService, computeStreak } from './users.service';
 
 const actor = { id: 'admin-actor', role: Role.ADMIN };
 
@@ -22,7 +27,9 @@ function row(overrides: Partial<UserRow> = {}): UserRow {
     phone: null,
     passwordHash: 'hash',
     nickname: '测试用户',
+    username: 'testuser',
     avatarUrl: null,
+    bio: null,
     role: Role.MEMBER,
     status: UserStatus.ACTIVE,
     createdAt: now,
@@ -37,6 +44,17 @@ describe('UsersService', () => {
   const usersRepository = {
     insert: jest.fn(),
     findById: jest.fn(),
+    findByUsername: jest.fn(),
+    findByIdOrUsername: jest.fn(),
+    usernameExists: jest.fn(),
+    updateUsername: jest.fn(),
+    insertFollow: jest.fn(),
+    deleteFollow: jest.fn(),
+    isFollowing: jest.fn(),
+    getFollowCounts: jest.fn(),
+    listFollowers: jest.fn(),
+    listFollowing: jest.fn(),
+    filterFollowedIds: jest.fn(),
     findByIds: jest.fn(),
     findByEmailOrPhone: jest.fn(),
     updateProfile: jest.fn(),
@@ -83,6 +101,12 @@ describe('UsersService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    usersRepository.findByIdOrUsername.mockImplementation((v: string) =>
+      usersRepository.findById(v),
+    );
+    usersRepository.getFollowCounts.mockResolvedValue({ followers: 0, following: 0 });
+    usersRepository.isFollowing.mockResolvedValue(false);
+    usersRepository.filterFollowedIds.mockResolvedValue(new Set());
     const moduleRef = await Test.createTestingModule({
       providers: [
         UsersService,
@@ -104,6 +128,7 @@ describe('UsersService', () => {
 
     expect(result).toEqual({
       id: '01890a5d-ac96-7000-8000-000000000001',
+      username: 'testuser',
       nickname: '测试用户',
       avatarUrl: null,
       role: Role.MEMBER,
@@ -305,7 +330,7 @@ describe('UsersService', () => {
   });
 
   it('个人主页：VISITOR 访他人 403，访自己放行', async () => {
-    usersRepository.findById.mockResolvedValue(row());
+    usersRepository.findById.mockImplementation((id: string) => row({ id }));
     mockProfileBasics();
 
     await expect(
@@ -448,6 +473,7 @@ describe('UsersService', () => {
         {
           id: 'reply-1',
           issueId: 'issue-1',
+          issueSlug: 'tao-lun-biao-ti',
           issueTitle: '讨论标题',
           content: '回复内容',
           createdAt: now,
@@ -462,6 +488,7 @@ describe('UsersService', () => {
     expect(result.items[0]).toEqual({
       id: 'reply-1',
       issueId: 'issue-1',
+      issueSlug: 'tao-lun-biao-ti',
       issueTitle: '讨论标题',
       content: '回复内容',
       createdAt: now.toISOString(),
@@ -471,5 +498,157 @@ describe('UsersService', () => {
       1,
       10,
     );
+  });
+
+  // ===== 关注 =====
+
+  const targetId = '01890a5d-ac96-7000-8000-000000000001';
+
+  it('关注：不能关注自己', async () => {
+    usersRepository.findById.mockResolvedValue(row());
+    await expect(service.follow(targetId, selfViewer)).rejects.toThrow(BadRequestException);
+    expect(usersRepository.insertFollow).not.toHaveBeenCalled();
+  });
+
+  it('关注：VISITOR 403', async () => {
+    usersRepository.findById.mockResolvedValue(row());
+    await expect(service.follow(targetId, visitorViewer)).rejects.toThrow(ForbiddenException);
+    expect(usersRepository.insertFollow).not.toHaveBeenCalled();
+  });
+
+  it('关注：新关注发一条通知，重复关注幂等不重复通知', async () => {
+    usersRepository.findById.mockResolvedValue(row());
+    usersRepository.insertFollow.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+
+    const first = await service.follow(targetId, memberViewer);
+    expect(first).toEqual({ following: true });
+    expect(notificationsService.notifyUser).toHaveBeenCalledTimes(1);
+    expect(notificationsService.notifyUser).toHaveBeenCalledWith(
+      targetId,
+      expect.objectContaining({ type: 'FOLLOW', link: '/users/testuser' }),
+    );
+
+    const second = await service.follow(targetId, memberViewer);
+    expect(second).toEqual({ following: true });
+    expect(notificationsService.notifyUser).toHaveBeenCalledTimes(1);
+  });
+
+  it('关注：目标封禁视为不存在', async () => {
+    usersRepository.findById.mockResolvedValue(row({ status: UserStatus.BANNED }));
+    await expect(service.follow(targetId, memberViewer)).rejects.toThrow(NotFoundException);
+    expect(usersRepository.insertFollow).not.toHaveBeenCalled();
+  });
+
+  it('取关：幂等返回 following:false', async () => {
+    usersRepository.findById.mockResolvedValue(row());
+    usersRepository.deleteFollow.mockResolvedValue(false);
+    const result = await service.unfollow(targetId, memberViewer);
+    expect(result).toEqual({ following: false });
+  });
+
+  it('关注列表：排除封禁由仓储保证，返回用户卡与关注态', async () => {
+    usersRepository.findById.mockResolvedValue(row());
+    usersRepository.listFollowing.mockResolvedValue({ rows: [row({ id: 'u-2', username: 'bob' })], total: 1 });
+    usersRepository.filterFollowedIds.mockResolvedValue(new Set(['u-2']));
+
+    const result = await service.listFollowing(targetId, memberViewer, 1, 10);
+
+    expect(result.items).toEqual([
+      {
+        id: 'u-2',
+        username: 'bob',
+        nickname: '测试用户',
+        avatarUrl: null,
+        role: Role.MEMBER,
+        bio: null,
+        isSelf: false,
+        isFollowing: true,
+      },
+    ]);
+    expect(result.total).toBe(1);
+  });
+
+  // ===== 用户名（handle） =====
+
+  it('改用户名：格式非法 400，重复 409，成功返回 UserSelf', async () => {
+    await expect(service.updateUsername(targetId, { username: 'a b' })).rejects.toThrow(
+      BadRequestException,
+    );
+    usersRepository.usernameExists.mockResolvedValue(true);
+    await expect(service.updateUsername(targetId, { username: 'taken' })).rejects.toThrow(
+      ConflictException,
+    );
+    usersRepository.usernameExists.mockResolvedValue(false);
+    usersRepository.updateUsername.mockResolvedValue(row({ username: 'new-name' }));
+    const result = await service.updateUsername(targetId, { username: 'New-Name' });
+    expect(result.username).toBe('new-name');
+    expect(usersRepository.updateUsername).toHaveBeenCalledWith(targetId, 'new-name', 'testuser');
+  });
+
+  it('社区数据徽章：按用户名返回四类计数、近一年贡献与站内连击', async () => {
+    const dayKey = (offset: number): string => {
+      const d = new Date();
+      d.setUTCDate(d.getUTCDate() - offset);
+      return d.toISOString().slice(0, 10);
+    };
+    usersRepository.findByUsername.mockResolvedValue(row());
+    usersRepository.getProfileStats.mockResolvedValue({
+      articles: 1,
+      issues: 2,
+      replies: 3,
+      submissions: 4,
+    });
+    usersRepository.getActivityParts.mockResolvedValue({
+      articles: [{ date: dayKey(0), count: 2 }],
+      issues: [{ date: dayKey(0), count: 1 }],
+      replies: [{ date: dayKey(1), count: 3 }],
+      submissions: [],
+      resources: [{ date: dayKey(2), count: 1 }],
+    });
+
+    const result = await service.getStatsBadges('gemini');
+
+    expect(result).toEqual({
+      articles: 1,
+      issues: 2,
+      replies: 3,
+      submissions: 4,
+      contributions: 7,
+      streak: 3,
+    });
+    expect(usersRepository.getProfileStats).toHaveBeenCalledWith(
+      '01890a5d-ac96-7000-8000-000000000001',
+    );
+  });
+
+  it('社区数据徽章：用户名不存在 404', async () => {
+    usersRepository.findByUsername.mockResolvedValue(null);
+
+    await expect(service.getStatsBadges('no-such-user')).rejects.toThrow(NotFoundException);
+    expect(usersRepository.getProfileStats).not.toHaveBeenCalled();
+  });
+
+  it('站内连击：今天无贡献从昨天起算，中断则归零', () => {
+    const today = new Date('2026-01-03T12:00:00.000Z');
+
+    expect(
+      computeStreak(
+        [
+          { date: '2026-01-01', count: 1 },
+          { date: '2026-01-02', count: 2 },
+        ],
+        today,
+      ),
+    ).toBe(2);
+    expect(
+      computeStreak(
+        [
+          { date: '2026-01-02', count: 1 },
+          { date: '2025-12-30', count: 5 },
+        ],
+        today,
+      ),
+    ).toBe(1);
+    expect(computeStreak([{ date: '2026-01-03', count: 0 }], today)).toBe(0);
   });
 });

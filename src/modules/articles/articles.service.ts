@@ -4,6 +4,7 @@ import { CurrentAuthUser } from '../../common/decorators/current-user.decorator'
 import { Role } from '../../common/decorators/roles.decorator';
 import { requireRole } from '../../common/permissions';
 import { TagTargetType } from '../../db/schema';
+import { uniqueSlug } from '../../common/utils/identifiers';
 import { AuditLogService } from '../audit/audit-log.service';
 import { TagsService } from '../tags/tags.service';
 import { UsersService } from '../users/users.service';
@@ -65,6 +66,7 @@ export class ArticlesService {
   private toListItem(row: ArticleRow, author: UserPublic, tags: string[]): ArticleListItem {
     return {
       id: row.id,
+      slug: row.slug,
       title: row.title,
       excerpt: this.excerpt(row.content),
       tags,
@@ -78,6 +80,7 @@ export class ArticlesService {
   private toDetail(row: ArticleRow, author: UserPublic, tags: string[]): ArticleDetail {
     return {
       id: row.id,
+      slug: row.slug,
       title: row.title,
       content: row.content,
       tags,
@@ -134,7 +137,7 @@ export class ArticlesService {
   }
 
   async getDetail(id: string, user?: CurrentAuthUser): Promise<ArticleDetail> {
-    const row = await this.articlesRepository.findById(id);
+    const row = await this.articlesRepository.findByIdOrSlug(id);
     if (!row) {
       throw new NotFoundException('文章不存在');
     }
@@ -154,8 +157,10 @@ export class ArticlesService {
     // MEMBER 先审后发 → PENDING；ALUMNI/WHEEL/ADMIN 先发后审 → PUBLISHED
     const status = user.role === Role.MEMBER ? 'PENDING' : 'PUBLISHED';
     const names = this.tagsService.normalizeTags(dto.tags) ?? [];
+    const slug = await uniqueSlug(dto.title, (s) => this.articlesRepository.slugExists(s));
     const row = await this.articlesRepository.insert({
       title: dto.title,
+      slug,
       content: dto.content,
       authorId: user.id,
       status,

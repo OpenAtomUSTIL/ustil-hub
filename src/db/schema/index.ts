@@ -1,4 +1,6 @@
 export * from './users';
+export * from './user_follows';
+export * from './user_username_history';
 export * from './invite_codes';
 export * from './articles';
 export * from './assignments';

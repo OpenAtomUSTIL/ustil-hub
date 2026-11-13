@@ -8,6 +8,7 @@ export const notificationTypeEnum = pgEnum('notification_type', [
   'ISSUE_REPLY',
   'ROLE',
   'SYSTEM',
+  'FOLLOW',
 ]);
 
 export const NotificationType = {
@@ -16,6 +17,7 @@ export const NotificationType = {
   ISSUE_REPLY: 'ISSUE_REPLY',
   ROLE: 'ROLE',
   SYSTEM: 'SYSTEM',
+  FOLLOW: 'FOLLOW',
 } as const;
 export type NotificationType = (typeof NotificationType)[keyof typeof NotificationType];
 

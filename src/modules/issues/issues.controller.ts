@@ -20,7 +20,7 @@ export class IssuesController {
   }
 
   @Get(':id')
-  detail(@Param('id', uuidParamPipe) id: string) {
+  detail(@Param('id') id: string) {
     return this.issuesService.getDetail(id);
   }
 

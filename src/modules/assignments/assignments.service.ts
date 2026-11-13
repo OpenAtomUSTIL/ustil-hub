@@ -3,6 +3,7 @@ import { Page } from '../../common/dto/page';
 import { CurrentAuthUser } from '../../common/decorators/current-user.decorator';
 import { Role } from '../../common/decorators/roles.decorator';
 import { requireRole } from '../../common/permissions';
+import { uniqueSlug } from '../../common/utils/identifiers';
 import { AuditLogService } from '../audit/audit-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { AttachmentView } from '../storage/storage.types';
@@ -71,6 +72,7 @@ export class AssignmentsService {
   ): AssignmentItem {
     return {
       id: row.id,
+      slug: row.slug,
       title: row.title,
       description: row.description,
       startAt: row.startAt.toISOString(),
@@ -173,9 +175,12 @@ export class AssignmentsService {
     if (user.role === Role.VISITOR) {
       throw new ForbiddenException('无权访问该资源');
     }
-    const row = await this.requireAssignment(id);
+    const row = await this.assignmentsRepository.findByIdOrSlug(id);
+    if (!row) {
+      throw new NotFoundException('作业不存在');
+    }
     const publisher = await this.publisherOf(row);
-    const submissionRow = await this.assignmentsRepository.findSubmission(id, user.id);
+    const submissionRow = await this.assignmentsRepository.findSubmission(row.id, user.id);
     const mySubmission = submissionRow ? await this.submissionViewOf(submissionRow) : null;
     return this.toItem(
       row,
@@ -191,8 +196,10 @@ export class AssignmentsService {
       throw new ForbiddenException('无权访问该资源');
     }
     this.assertWindowValid(dto.startAt, dto.deadlineAt);
+    const slug = await uniqueSlug(dto.title, (s) => this.assignmentsRepository.slugExists(s));
     const row = await this.assignmentsRepository.insert({
       title: dto.title,
+      slug,
       description: dto.description,
       publisherId: user.id,
       startAt: dto.startAt,
@@ -203,7 +210,7 @@ export class AssignmentsService {
     await this.notificationsService.notifyUsers(memberIds, {
       type: 'ASSIGNMENT',
       title: row.title,
-      link: `/assignments/${row.id}`,
+      link: `/assignments/${row.slug}`,
     });
     await this.auditLogService.record({
       actor: user,
@@ -349,6 +356,7 @@ export class AssignmentsService {
       return {
         id: row.id,
         assignmentId: row.assignmentId,
+        assignmentSlug: assignment.slug,
         assignmentTitle: assignment.title,
         startAt: assignment.startAt.toISOString(),
         deadlineAt: assignment.deadlineAt.toISOString(),

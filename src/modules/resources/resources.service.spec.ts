@@ -12,6 +12,7 @@ const now = new Date('2026-01-01T00:00:00.000Z');
 function row(overrides: Partial<ResourceRow> = {}): ResourceRow {
   return {
     id: '01890a5d-ac96-7000-8000-0000000000r1',
+    slug: 'drizzle-文档',
     title: 'Drizzle 文档',
     description: 'ORM 文档',
     url: 'https://orm.drizzle.team',
@@ -30,6 +31,8 @@ describe('ResourcesService', () => {
     list: jest.fn(),
     findById: jest.fn(),
     findByIdIncludingDeleted: jest.fn(),
+    findByIdOrSlug: jest.fn(),
+    slugExists: jest.fn(),
     insert: jest.fn(),
     update: jest.fn(),
     softDeleteById: jest.fn(),
@@ -52,6 +55,8 @@ describe('ResourcesService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    resourcesRepository.slugExists.mockResolvedValue(false);
+    resourcesRepository.findByIdOrSlug.mockImplementation((v) => resourcesRepository.findById(v));
     const moduleRef = await Test.createTestingModule({
       providers: [
         ResourcesService,

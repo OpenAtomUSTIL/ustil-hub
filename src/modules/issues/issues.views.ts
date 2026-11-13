@@ -3,6 +3,7 @@ import { UserPublic } from '../users/users.views';
 
 export interface IssueListItem {
   id: string;
+  slug: string;
   title: string;
   tags: string[];
   status: IssueStatus;

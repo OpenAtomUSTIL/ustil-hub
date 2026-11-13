@@ -3,6 +3,7 @@ import { CurrentAuthUser } from '../../common/decorators/current-user.decorator'
 import { Page } from '../../common/dto/page';
 import { Role } from '../../common/decorators/roles.decorator';
 import { requireRole } from '../../common/permissions';
+import { uniqueSlug } from '../../common/utils/identifiers';
 import { AuditLogService } from '../audit/audit-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UsersService } from '../users/users.service';
@@ -20,26 +21,28 @@ export class AnnouncementsService {
     private readonly auditLogService: AuditLogService,
   ) {}
 
-  private toItem(row: AnnouncementRow, authorName: string): AnnouncementItem {
+  private toItem(row: AnnouncementRow, authorName: string, authorUsername: string): AnnouncementItem {
     return {
       id: row.id,
+      slug: row.slug,
       title: row.title,
       content: row.content,
       pinned: row.pinned,
       authorId: row.authorId,
       authorName,
+      authorUsername,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };
   }
 
-  private async authorNameOf(row: AnnouncementRow): Promise<string> {
+  private async authorOf(row: AnnouncementRow): Promise<{ nickname: string; username: string }> {
     const map = await this.usersService.getPublicByIds([row.authorId]);
     const author = map.get(row.authorId);
     if (!author) {
       throw new NotFoundException('用户不存在');
     }
-    return author.nickname;
+    return { nickname: author.nickname, username: author.username };
   }
 
   async list(query: AnnouncementsQueryDto): Promise<Page<AnnouncementItem>> {
@@ -55,7 +58,7 @@ export class AnnouncementsService {
         if (!author) {
           throw new NotFoundException('用户不存在');
         }
-        return this.toItem(row, author.nickname);
+        return this.toItem(row, author.nickname, author.username);
       }),
       total,
       page: query.page,
@@ -64,17 +67,20 @@ export class AnnouncementsService {
   }
 
   async getDetail(id: string): Promise<AnnouncementItem> {
-    const row = await this.announcementsRepository.findById(id);
+    const row = await this.announcementsRepository.findByIdOrSlug(id);
     if (!row) {
       throw new NotFoundException('公告不存在');
     }
-    return this.toItem(row, await this.authorNameOf(row));
+    const author = await this.authorOf(row);
+    return this.toItem(row, author.nickname, author.username);
   }
 
   async create(user: CurrentAuthUser, dto: CreateAnnouncementDto): Promise<AnnouncementItem> {
     requireRole(user, Role.WHEEL, Role.ADMIN);
+    const slug = await uniqueSlug(dto.title, (s) => this.announcementsRepository.slugExists(s));
     const row = await this.announcementsRepository.insert({
       title: dto.title,
+      slug,
       content: dto.content,
       pinned: dto.pinned ?? false,
       authorId: user.id,
@@ -84,7 +90,7 @@ export class AnnouncementsService {
       await this.notificationsService.notifyUsers(userIds, {
         type: 'ANNOUNCEMENT',
         title: row.title,
-        link: `/announcements/${row.id}`,
+        link: `/announcements/${row.slug}`,
       });
     }
     await this.auditLogService.record({
@@ -94,7 +100,14 @@ export class AnnouncementsService {
       targetId: row.id,
       detail: { title: row.title },
     });
-    return this.toItem(row, await this.authorNameOf(row));
+    return this.toItem(row, ...(await this.toAuthorPair(row)));
+  }
+
+  private async toAuthorPair(
+    row: AnnouncementRow,
+  ): Promise<[authorName: string, authorUsername: string]> {
+    const author = await this.authorOf(row);
+    return [author.nickname, author.username];
   }
 
   async update(
@@ -125,7 +138,7 @@ export class AnnouncementsService {
       targetId: id,
       detail: { title: updated.title },
     });
-    return this.toItem(updated, await this.authorNameOf(updated));
+    return this.toItem(updated, ...(await this.toAuthorPair(updated)));
   }
 
   async remove(id: string, user: CurrentAuthUser): Promise<void> {

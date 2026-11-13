@@ -1,4 +1,4 @@
-import { index, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { index, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { v7 as uuidv7 } from 'uuid';
 import { users } from './users';
 
@@ -9,6 +9,8 @@ export const assignments = pgTable(
       .primaryKey()
       .$defaultFn(() => uuidv7()),
     title: text('title').notNull(),
+    // URL 用 slug（不暴露裸 id）：创建时由标题生成，创建后不变
+    slug: text('slug').notNull(),
     description: text('description').notNull(),
     publisherId: uuid('publisher_id')
       .notNull()
@@ -25,5 +27,6 @@ export const assignments = pgTable(
     index('assignments_publisher_id_idx').on(t.publisherId),
     index('assignments_start_at_idx').on(t.startAt),
     index('assignments_deadline_at_idx').on(t.deadlineAt),
+    uniqueIndex('assignments_slug_key').on(t.slug),
   ],
 );

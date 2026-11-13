@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { and, desc, eq, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { IssueStatus, issueReplies, issues } from '../../db/schema';
+import { isUuid } from '../../common/utils/identifiers';
 
 export type IssueRow = typeof issues.$inferSelect;
 export type ReplyRow = typeof issueReplies.$inferSelect;
@@ -56,7 +57,25 @@ export class IssuesRepository {
     return rows[0] ?? null;
   }
 
-  async insert(row: { title: string; content: string; authorId: string }): Promise<IssueRow> {
+  async slugExists(slug: string): Promise<boolean> {
+    const rows = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.slug, slug))
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  async findBySlug(slug: string): Promise<IssueRow | null> {
+    const rows = await db.select().from(issues).where(eq(issues.slug, slug)).limit(1);
+    return rows[0] ?? null;
+  }
+
+  async findByIdOrSlug(value: string): Promise<IssueRow | null> {
+    return isUuid(value) ? this.findById(value) : this.findBySlug(value);
+  }
+
+  async insert(row: { title: string; slug: string; content: string; authorId: string }): Promise<IssueRow> {
     const inserted = await db.insert(issues).values(row).returning();
     return inserted[0];
   }

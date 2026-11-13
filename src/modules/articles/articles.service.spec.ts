@@ -12,6 +12,7 @@ const now = new Date('2026-01-01T00:00:00.000Z');
 function row(overrides: Partial<ArticleRow> = {}): ArticleRow {
   return {
     id: '01890a5d-ac96-7000-8000-0000000000a1',
+    slug: '标题',
     title: '标题',
     content: '正文内容',
     authorId: '01890a5d-ac96-7000-8000-000000000001',
@@ -32,6 +33,8 @@ describe('ArticlesService', () => {
     list: jest.fn(),
     findById: jest.fn(),
     findByIdIncludingDeleted: jest.fn(),
+    findByIdOrSlug: jest.fn(),
+    slugExists: jest.fn(),
     insert: jest.fn(),
     update: jest.fn(),
     updateStatus: jest.fn(),
@@ -55,6 +58,8 @@ describe('ArticlesService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    articlesRepository.slugExists.mockResolvedValue(false);
+    articlesRepository.findByIdOrSlug.mockImplementation((v) => articlesRepository.findById(v));
     const moduleRef = await Test.createTestingModule({
       providers: [
         ArticlesService,

@@ -12,6 +12,7 @@ const now = new Date('2026-01-01T00:00:00.000Z');
 function row(overrides: Partial<AnnouncementRow> = {}): AnnouncementRow {
   return {
     id: '01890a5d-ac96-7000-8000-0000000000a2',
+    slug: '公告标题',
     title: '公告标题',
     content: '公告正文',
     pinned: false,
@@ -29,6 +30,8 @@ describe('AnnouncementsService', () => {
     list: jest.fn(),
     findById: jest.fn(),
     findByIdIncludingDeleted: jest.fn(),
+    findByIdOrSlug: jest.fn(),
+    slugExists: jest.fn(),
     insert: jest.fn(),
     update: jest.fn(),
     softDeleteById: jest.fn(),
@@ -49,6 +52,8 @@ describe('AnnouncementsService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    announcementsRepository.slugExists.mockResolvedValue(false);
+    announcementsRepository.findByIdOrSlug.mockImplementation((v) => announcementsRepository.findById(v));
     const moduleRef = await Test.createTestingModule({
       providers: [
         AnnouncementsService,
@@ -85,6 +90,7 @@ describe('AnnouncementsService', () => {
 
     expect(result).toEqual({
       id: '01890a5d-ac96-7000-8000-0000000000a2',
+      slug: '公告标题',
       title: '公告标题',
       content: '公告正文',
       pinned: false,
@@ -111,7 +117,7 @@ describe('AnnouncementsService', () => {
     expect(notificationsService.notifyUsers).toHaveBeenCalledWith(['u-1', 'u-2'], {
       type: 'ANNOUNCEMENT',
       title: '公告标题',
-      link: '/announcements/01890a5d-ac96-7000-8000-0000000000a2',
+      link: '/announcements/公告标题',
     });
   });
 

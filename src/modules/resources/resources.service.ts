@@ -4,6 +4,7 @@ import { Page } from '../../common/dto/page';
 import { Role } from '../../common/decorators/roles.decorator';
 import { requireRole } from '../../common/permissions';
 import { TagTargetType } from '../../db/schema';
+import { uniqueSlug } from '../../common/utils/identifiers';
 import { AuditLogService } from '../audit/audit-log.service';
 import { TagsService } from '../tags/tags.service';
 import { UsersService } from '../users/users.service';
@@ -21,9 +22,10 @@ export class ResourcesService {
     private readonly auditLogService: AuditLogService,
   ) {}
 
-  private toItem(row: ResourceRow, creatorName: string, tags: string[]): ResourceItem {
+  private toItem(row: ResourceRow, creatorName: string, creatorUsername: string, tags: string[]): ResourceItem {
     return {
       id: row.id,
+      slug: row.slug,
       title: row.title,
       description: row.description,
       url: row.url,
@@ -31,6 +33,7 @@ export class ResourcesService {
       tags,
       creatorId: row.creatorId,
       creatorName,
+      creatorUsername,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     };
@@ -47,7 +50,7 @@ export class ResourcesService {
       if (!creator) {
         throw new NotFoundException('用户不存在');
       }
-      return this.toItem(row, creator.nickname, tagsByTarget.get(row.id) ?? []);
+      return this.toItem(row, creator.nickname, creator.username, tagsByTarget.get(row.id) ?? []);
     });
   }
 
@@ -70,7 +73,7 @@ export class ResourcesService {
   }
 
   async getDetail(id: string): Promise<ResourceItem> {
-    const row = await this.resourcesRepository.findById(id);
+    const row = await this.resourcesRepository.findByIdOrSlug(id);
     if (!row) {
       throw new NotFoundException('资源不存在');
     }
@@ -81,8 +84,10 @@ export class ResourcesService {
   async create(user: CurrentAuthUser, dto: CreateResourceDto): Promise<ResourceItem> {
     requireRole(user, Role.WHEEL, Role.ADMIN);
     const names = this.tagsService.normalizeTags(dto.tags) ?? [];
+    const slug = await uniqueSlug(dto.title, (s) => this.resourcesRepository.slugExists(s));
     const row = await this.resourcesRepository.insert({
       title: dto.title,
+      slug,
       description: dto.description ?? null,
       url: dto.url,
       category: dto.category,

@@ -1,4 +1,4 @@
-import { index, pgEnum, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { index, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { v7 as uuidv7 } from 'uuid';
 import { users } from './users';
 
@@ -18,6 +18,8 @@ export const issues = pgTable(
       .primaryKey()
       .$defaultFn(() => uuidv7()),
     title: text('title').notNull(),
+    // URL 用 slug（不暴露裸 id）：创建时由标题生成，创建后不变
+    slug: text('slug').notNull(),
     content: text('content').notNull(),
     authorId: uuid('author_id')
       .notNull()
@@ -35,5 +37,6 @@ export const issues = pgTable(
     index('issues_author_id_idx').on(t.authorId),
     index('issues_status_idx').on(t.status),
     index('issues_created_at_idx').on(t.createdAt),
+    uniqueIndex('issues_slug_key').on(t.slug),
   ],
 );

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { type SQL, and, desc, eq, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
 import { articles } from '../../db/schema';
+import { isUuid } from '../../common/utils/identifiers';
 
 export type ArticleRow = typeof articles.$inferSelect;
 
@@ -76,8 +77,32 @@ export class ArticlesRepository {
     return rows[0] ?? null;
   }
 
+  // slug 唯一性检查需覆盖软删行（唯一约束跨软删生效）
+  async slugExists(slug: string): Promise<boolean> {
+    const rows = await db
+      .select({ id: articles.id })
+      .from(articles)
+      .where(eq(articles.slug, slug))
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  async findBySlug(slug: string): Promise<ArticleRow | null> {
+    const rows = await db
+      .select()
+      .from(articles)
+      .where(and(eq(articles.slug, slug), isNull(articles.deletedAt)))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  async findByIdOrSlug(value: string): Promise<ArticleRow | null> {
+    return isUuid(value) ? this.findById(value) : this.findBySlug(value);
+  }
+
   async insert(row: {
     title: string;
+    slug: string;
     content: string;
     authorId: string;
     status: string;

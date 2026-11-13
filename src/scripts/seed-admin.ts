@@ -6,6 +6,7 @@
 import { eq } from 'drizzle-orm';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
+import { uniqueUsername } from '../common/utils/identifiers';
 import { db } from '../db';
 import { users } from '../db/schema';
 import { hashPassword } from '../modules/auth/password';
@@ -65,12 +66,17 @@ async function main(): Promise<void> {
   }
 
   const passwordHash = await hashPassword(password);
+  const username = await uniqueUsername('admin', async (u) => {
+    const rows = await db.select({ id: users.id }).from(users).where(eq(users.username, u)).limit(1);
+    return rows.length > 0;
+  });
   const [row] = await db
     .insert(users)
     .values({
       email,
       passwordHash,
       nickname: '管理员',
+      username,
       role: 'ADMIN',
       status: 'ACTIVE',
     })

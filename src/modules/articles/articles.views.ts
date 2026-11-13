@@ -2,6 +2,7 @@ import { UserPublic } from '../users/users.views';
 
 export interface ArticleListItem {
   id: string;
+  slug: string;
   title: string;
   excerpt: string;
   tags: string[];
@@ -13,6 +14,7 @@ export interface ArticleListItem {
 
 export interface ArticleDetail {
   id: string;
+  slug: string;
   title: string;
   content: string;
   tags: string[];

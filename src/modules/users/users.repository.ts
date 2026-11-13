@@ -9,9 +9,12 @@ import {
   resources,
   taggings,
   tags,
+  userFollows,
+  userUsernameHistory,
   UserStatus,
   users,
 } from '../../db/schema';
+import { isUuid } from '../../common/utils/identifiers';
 
 export type UserRow = typeof users.$inferSelect;
 
@@ -20,6 +23,7 @@ export type PinnedItemType = 'ARTICLE' | 'ISSUE' | 'RESOURCE';
 export interface PinnedTarget {
   type: PinnedItemType;
   id: string;
+  slug: string;
   title: string;
   url?: string;
   ownerId: string;
@@ -41,6 +45,7 @@ export interface ActivityParts {
 export interface ProfileReplyRow {
   id: string;
   issueId: string;
+  issueSlug: string;
   issueTitle: string;
   content: string;
   createdAt: Date;
@@ -71,6 +76,7 @@ export class UsersRepository {
     phone: string | null;
     passwordHash: string;
     nickname: string;
+    username: string;
     role?: UserRow['role'];
     inviteCodeId?: string | null;
   }): Promise<UserRow> {
@@ -81,6 +87,63 @@ export class UsersRepository {
   async findById(id: string): Promise<UserRow | null> {
     const rows = await db.select().from(users).where(eq(users.id, id)).limit(1);
     return rows[0] ?? null;
+  }
+
+  /** 当前 username 优先；旧 handle 回落变更历史（旧链接保留跳转） */
+  async findByUsername(username: string): Promise<UserRow | null> {
+    const rows = await db.select().from(users).where(eq(users.username, username)).limit(1);
+    if (rows[0]) {
+      return rows[0];
+    }
+    const history = await db
+      .select({ user: users })
+      .from(userUsernameHistory)
+      .innerJoin(users, eq(users.id, userUsernameHistory.userId))
+      .where(eq(userUsernameHistory.username, username))
+      .limit(1);
+    return history[0]?.user ?? null;
+  }
+
+  async findByIdOrUsername(value: string): Promise<UserRow | null> {
+    return isUuid(value) ? this.findById(value) : this.findByUsername(value);
+  }
+
+  /** 占用检查含历史 handle（旧 handle 不可被他人抢占） */
+  async usernameExists(username: string): Promise<boolean> {
+    const rows = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.username, username))
+      .limit(1);
+    if (rows.length > 0) {
+      return true;
+    }
+    const history = await db
+      .select({ id: userUsernameHistory.id })
+      .from(userUsernameHistory)
+      .where(eq(userUsernameHistory.username, username))
+      .limit(1);
+    return history.length > 0;
+  }
+
+  /** 改 handle：旧 username 写入历史（保留跳转），同事务更新现值 */
+  async updateUsername(
+    id: string,
+    username: string,
+    previousUsername: string,
+  ): Promise<UserRow | null> {
+    return db.transaction(async (tx) => {
+      await tx
+        .insert(userUsernameHistory)
+        .values({ userId: id, username: previousUsername })
+        .onConflictDoNothing({ target: [userUsernameHistory.username] });
+      const rows = await tx
+        .update(users)
+        .set({ username })
+        .where(eq(users.id, id))
+        .returning();
+      return rows[0] ?? null;
+    });
   }
 
   async findByIds(ids: string[]): Promise<UserRow[]> {
@@ -497,33 +560,33 @@ export class UsersRepository {
     const articleIds = idsByType.get('ARTICLE') ?? [];
     if (articleIds.length > 0) {
       const rows = await db
-        .select({ id: articles.id, title: articles.title, ownerId: articles.authorId })
+        .select({ id: articles.id, slug: articles.slug, title: articles.title, ownerId: articles.authorId })
         .from(articles)
         .where(and(inArray(articles.id, articleIds), isNull(articles.deletedAt)));
       for (const r of rows) {
-        result.push({ type: 'ARTICLE', id: r.id, title: r.title, ownerId: r.ownerId });
+        result.push({ type: 'ARTICLE', id: r.id, slug: r.slug, title: r.title, ownerId: r.ownerId });
       }
     }
 
     const issueIds = idsByType.get('ISSUE') ?? [];
     if (issueIds.length > 0) {
       const rows = await db
-        .select({ id: issues.id, title: issues.title, ownerId: issues.authorId })
+        .select({ id: issues.id, slug: issues.slug, title: issues.title, ownerId: issues.authorId })
         .from(issues)
         .where(inArray(issues.id, issueIds));
       for (const r of rows) {
-        result.push({ type: 'ISSUE', id: r.id, title: r.title, ownerId: r.ownerId });
+        result.push({ type: 'ISSUE', id: r.id, slug: r.slug, title: r.title, ownerId: r.ownerId });
       }
     }
 
     const resourceIds = idsByType.get('RESOURCE') ?? [];
     if (resourceIds.length > 0) {
       const rows = await db
-        .select({ id: resources.id, title: resources.title, url: resources.url, ownerId: resources.creatorId })
+        .select({ id: resources.id, slug: resources.slug, title: resources.title, url: resources.url, ownerId: resources.creatorId })
         .from(resources)
         .where(and(inArray(resources.id, resourceIds), isNull(resources.deletedAt)));
       for (const r of rows) {
-        result.push({ type: 'RESOURCE', id: r.id, title: r.title, url: r.url, ownerId: r.ownerId });
+        result.push({ type: 'RESOURCE', id: r.id, slug: r.slug, title: r.title, url: r.url, ownerId: r.ownerId });
       }
     }
 
@@ -541,6 +604,7 @@ export class UsersRepository {
       .select({
         id: issueReplies.id,
         issueId: issueReplies.issueId,
+        issueSlug: issues.slug,
         issueTitle: issues.title,
         content: issueReplies.content,
         createdAt: issueReplies.createdAt,
@@ -553,5 +617,107 @@ export class UsersRepository {
       .offset((page - 1) * pageSize);
     const totalRows = await db.select({ count: sql<number>`count(*)::int` }).from(issueReplies).where(where);
     return { rows, total: totalRows[0]?.count ?? 0 };
+  }
+
+  // ===== 关注 =====
+
+  /** 幂等关注：已关注返回 false（未产生新行） */
+  async insertFollow(followerId: string, followeeId: string): Promise<boolean> {
+    const inserted = await db
+      .insert(userFollows)
+      .values({ followerId, followeeId })
+      .onConflictDoNothing({ target: [userFollows.followerId, userFollows.followeeId] })
+      .returning({ id: userFollows.id });
+    return inserted.length > 0;
+  }
+
+  async deleteFollow(followerId: string, followeeId: string): Promise<boolean> {
+    const deleted = await db
+      .delete(userFollows)
+      .where(and(eq(userFollows.followerId, followerId), eq(userFollows.followeeId, followeeId)))
+      .returning({ id: userFollows.id });
+    return deleted.length > 0;
+  }
+
+  async isFollowing(followerId: string, followeeId: string): Promise<boolean> {
+    const rows = await db
+      .select({ id: userFollows.id })
+      .from(userFollows)
+      .where(and(eq(userFollows.followerId, followerId), eq(userFollows.followeeId, followeeId)))
+      .limit(1);
+    return rows.length > 0;
+  }
+
+  /** 计数口径：对方 ACTIVE 才计入（封禁不展示、不计数） */
+  async getFollowCounts(userId: string): Promise<{ followers: number; following: number }> {
+    const [followers, following] = await Promise.all([
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(userFollows)
+        .innerJoin(users, eq(users.id, userFollows.followerId))
+        .where(and(eq(userFollows.followeeId, userId), eq(users.status, 'ACTIVE'))),
+      db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(userFollows)
+        .innerJoin(users, eq(users.id, userFollows.followeeId))
+        .where(and(eq(userFollows.followerId, userId), eq(users.status, 'ACTIVE'))),
+    ]);
+    return { followers: followers[0]?.count ?? 0, following: following[0]?.count ?? 0 };
+  }
+
+  async listFollowers(
+    userId: string,
+    page: number,
+    pageSize: number,
+  ): Promise<{ rows: UserRow[]; total: number }> {
+    const where = and(eq(userFollows.followeeId, userId), eq(users.status, 'ACTIVE'));
+    const joined = await db
+      .select({ user: users })
+      .from(userFollows)
+      .innerJoin(users, eq(users.id, userFollows.followerId))
+      .where(where)
+      .orderBy(desc(userFollows.createdAt))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize);
+    const totalRows = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(userFollows)
+      .innerJoin(users, eq(users.id, userFollows.followerId))
+      .where(where);
+    return { rows: joined.map((r) => r.user), total: totalRows[0]?.count ?? 0 };
+  }
+
+  async listFollowing(
+    userId: string,
+    page: number,
+    pageSize: number,
+  ): Promise<{ rows: UserRow[]; total: number }> {
+    const where = and(eq(userFollows.followerId, userId), eq(users.status, 'ACTIVE'));
+    const joined = await db
+      .select({ user: users })
+      .from(userFollows)
+      .innerJoin(users, eq(users.id, userFollows.followeeId))
+      .where(where)
+      .orderBy(desc(userFollows.createdAt))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize);
+    const totalRows = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(userFollows)
+      .innerJoin(users, eq(users.id, userFollows.followeeId))
+      .where(where);
+    return { rows: joined.map((r) => r.user), total: totalRows[0]?.count ?? 0 };
+  }
+
+  /** viewer 已关注的 id 集合（列表批量标注用） */
+  async filterFollowedIds(viewerId: string, ids: string[]): Promise<Set<string>> {
+    if (ids.length === 0) {
+      return new Set();
+    }
+    const rows = await db
+      .select({ followeeId: userFollows.followeeId })
+      .from(userFollows)
+      .where(and(eq(userFollows.followerId, viewerId), inArray(userFollows.followeeId, ids)));
+    return new Set(rows.map((r) => r.followeeId));
   }
 }

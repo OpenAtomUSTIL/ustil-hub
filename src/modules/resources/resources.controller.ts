@@ -26,7 +26,7 @@ export class ResourcesController {
   }
 
   @Get(':id')
-  detail(@Param('id', uuidParamPipe) id: string) {
+  detail(@Param('id') id: string) {
     return this.resourcesService.getDetail(id);
   }
 

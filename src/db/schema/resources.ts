@@ -1,4 +1,4 @@
-import { index, pgEnum, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { index, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { v7 as uuidv7 } from 'uuid';
 import { users } from './users';
 
@@ -26,6 +26,8 @@ export const resources = pgTable(
       .primaryKey()
       .$defaultFn(() => uuidv7()),
     title: text('title').notNull(),
+    // URL 用 slug（不暴露裸 id）：创建时由标题生成，创建后不变；软删不回收
+    slug: text('slug').notNull(),
     description: text('description'),
     url: text('url').notNull(),
     category: resourceCategoryEnum('category').notNull(),
@@ -45,5 +47,6 @@ export const resources = pgTable(
     index('resources_category_idx').on(t.category),
     index('resources_created_at_idx').on(t.createdAt),
     index('resources_deleted_at_idx').on(t.deletedAt),
+    uniqueIndex('resources_slug_key').on(t.slug),
   ],
 );

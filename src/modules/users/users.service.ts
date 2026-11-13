@@ -5,6 +5,7 @@ import { isEmail, isMobilePhone } from 'class-validator';
 import { Role } from '../../common/decorators/roles.decorator';
 import { CurrentAuthUser } from '../../common/decorators/current-user.decorator';
 import { Page } from '../../common/dto/page';
+import { USERNAME_RE, uniqueUsername } from '../../common/utils/identifiers';
 import { requireRole } from '../../common/permissions';
 import { REFRESH_TOKEN_STORE, RefreshTokenStore } from '../../db/redis';
 import { UserStatus } from '../../db/schema';
@@ -20,12 +21,14 @@ import {
   AdminUserView,
   AuthUser,
   AvatarFileRef,
+  FollowUserView,
   UserAuthRecord,
   UserPublic,
   UserSelf,
   UserProfileView,
   ActivityView,
   ProfileReplyView,
+  UserStatsBadgeView,
 } from './users.views';
 
 function isUniqueViolation(error: unknown): boolean {
@@ -52,6 +55,7 @@ export class UsersService {
   private toSelf(row: UserRow): UserSelf {
     const self: UserSelf = {
       id: row.id,
+      username: row.username,
       nickname: row.nickname,
       avatarUrl: row.avatarUrl,
       role: row.role as Role,
@@ -71,6 +75,7 @@ export class UsersService {
   private toPublic(row: UserRow): UserPublic {
     return {
       id: row.id,
+      username: row.username,
       nickname: row.nickname,
       avatarUrl: row.avatarUrl,
       role: row.role as Role,
@@ -89,12 +94,16 @@ export class UsersService {
     role?: Role;
     inviteCodeId?: string | null;
   }): Promise<UserSelf> {
+    const username = await uniqueUsername(input.nickname, (u) =>
+      this.usersRepository.usernameExists(u),
+    );
     try {
       const row = await this.usersRepository.insert({
         email: input.email ?? null,
         phone: input.phone ?? null,
         passwordHash: input.passwordHash,
         nickname: input.nickname,
+        username,
         ...(input.role ? { role: input.role } : {}),
         inviteCodeId: input.inviteCodeId ?? null,
       });
@@ -154,8 +163,8 @@ export class UsersService {
       : null;
   }
 
-  async getPublic(id: string): Promise<UserPublic> {
-    const row = await this.usersRepository.findById(id);
+  async getPublic(idOrUsername: string): Promise<UserPublic> {
+    const row = await this.usersRepository.findByIdOrUsername(idOrUsername);
     if (!row) {
       throw new NotFoundException('用户不存在');
     }
@@ -518,30 +527,39 @@ export class UsersService {
 
   // ===== 个人主页 =====
 
-  async getProfile(id: string, viewer: CurrentAuthUser): Promise<UserProfileView> {
-    const row = await this.usersRepository.findById(id);
+  /** id 或 username 定位用户（URL 不暴露裸 id，旧 id 链接兼容） */
+  private async resolveUser(idOrUsername: string): Promise<UserRow> {
+    const row = await this.usersRepository.findByIdOrUsername(idOrUsername);
     if (!row) {
       throw new NotFoundException('用户不存在');
     }
-    const isSelf = viewer.id === id;
+    return row;
+  }
+
+  async getProfile(idOrUsername: string, viewer: CurrentAuthUser): Promise<UserProfileView> {
+    const row = await this.resolveUser(idOrUsername);
+    const isSelf = viewer.id === row.id;
     if (viewer.role === Role.VISITOR && !isSelf) {
       throw new ForbiddenException('无权访问该资源');
     }
 
-    const [stats, topTags, targets] = await Promise.all([
-      this.usersRepository.getProfileStats(id),
-      this.usersRepository.getProfileTopTags(id, 10),
+    const [stats, topTags, targets, followCounts, isFollowing] = await Promise.all([
+      this.usersRepository.getProfileStats(row.id),
+      this.usersRepository.getProfileTopTags(row.id, 10),
       this.usersRepository.findPinnedTargets(row.pinnedItems ?? []),
+      this.usersRepository.getFollowCounts(row.id),
+      isSelf ? Promise.resolve(false) : this.usersRepository.isFollowing(viewer.id, row.id),
     ]);
 
     const targetByKey = new Map(targets.map((t) => [`${t.type}:${t.id}`, t]));
     const pinnedItems = (row.pinnedItems ?? [])
       .map((item) => targetByKey.get(`${item.type}:${item.id}`))
       .filter((t): t is PinnedTarget => Boolean(t))
-      .map((t) => ({ type: t.type, id: t.id, title: t.title, url: t.url }));
+      .map((t) => ({ type: t.type, id: t.id, slug: t.slug, title: t.title, url: t.url }));
 
     const profile: UserProfileView = {
       id: row.id,
+      username: row.username,
       nickname: row.nickname,
       avatarUrl: row.avatarUrl,
       role: row.role as Role,
@@ -552,6 +570,9 @@ export class UsersService {
       topTags,
       pinnedItems,
       isSelf,
+      isFollowing,
+      followerCount: followCounts.followers,
+      followingCount: followCounts.following,
     };
     if (isSelf) {
       if (row.email) profile.email = row.email;
@@ -597,37 +618,56 @@ export class UsersService {
     }
   }
 
-  async getActivity(id: string, viewer: CurrentAuthUser): Promise<ActivityView> {
-    const isSelf = viewer.id === id;
+  async getActivity(idOrUsername: string, viewer: CurrentAuthUser): Promise<ActivityView> {
+    const row = await this.resolveUser(idOrUsername);
+    const isSelf = viewer.id === row.id;
     if (viewer.role === Role.VISITOR && !isSelf) {
       throw new ForbiddenException('无权访问该资源');
     }
     const since = new Date();
     since.setFullYear(since.getFullYear() - 1);
-    const parts = await this.usersRepository.getActivityParts(id, since);
+    const parts = await this.usersRepository.getActivityParts(row.id, since);
     return { days: mergeActivityParts(parts) };
+  }
+
+  /** 个人主页 · 社区数据徽章（公开聚合口径，软删不计，与 getActivity 一致；按用户名 handle 寻址） */
+  async getStatsBadges(username: string): Promise<UserStatsBadgeView> {
+    const row = await this.usersRepository.findByUsername(username);
+    if (!row) {
+      throw new NotFoundException('用户不存在');
+    }
+    const since = new Date();
+    since.setFullYear(since.getFullYear() - 1);
+    const [stats, parts] = await Promise.all([
+      this.usersRepository.getProfileStats(row.id),
+      this.usersRepository.getActivityParts(row.id, since),
+    ]);
+    const days = mergeActivityParts(parts);
+    return {
+      ...stats,
+      contributions: days.reduce((sum, d) => sum + d.count, 0),
+      streak: computeStreak(days),
+    };
   }
 
   /** 个人主页 · 回复 Tab：本人或 MEMBER+ 互访可见，VISITOR 仅看自己 */
   async getReplies(
-    id: string,
+    idOrUsername: string,
     viewer: CurrentAuthUser,
     page: number,
     pageSize: number,
   ): Promise<Page<ProfileReplyView>> {
-    const isSelf = viewer.id === id;
+    const row = await this.resolveUser(idOrUsername);
+    const isSelf = viewer.id === row.id;
     if (viewer.role === Role.VISITOR && !isSelf) {
       throw new ForbiddenException('无权访问该资源');
     }
-    const row = await this.usersRepository.findById(id);
-    if (!row) {
-      throw new NotFoundException('用户不存在');
-    }
-    const { rows, total } = await this.usersRepository.listRepliesByAuthor(id, page, pageSize);
+    const { rows, total } = await this.usersRepository.listRepliesByAuthor(row.id, page, pageSize);
     return {
       items: rows.map((r) => ({
         id: r.id,
         issueId: r.issueId,
+        issueSlug: r.issueSlug,
         issueTitle: r.issueTitle,
         content: r.content,
         createdAt: r.createdAt.toISOString(),
@@ -636,6 +676,130 @@ export class UsersService {
       page,
       pageSize,
     };
+  }
+
+  // ===== 用户名（handle） =====
+
+  async updateUsername(userId: string, dto: { username: string }): Promise<UserSelf> {
+    const username = dto.username.trim().toLowerCase();
+    if (!USERNAME_RE.test(username)) {
+      throw new BadRequestException('用户名需为 2-32 位字母、数字、- 或 _');
+    }
+    const current = await this.usersRepository.findById(userId);
+    if (!current) {
+      throw new NotFoundException('用户不存在');
+    }
+    if (current.username === username) {
+      return this.toSelf(current);
+    }
+    if (await this.usersRepository.usernameExists(username)) {
+      throw new ConflictException('该用户名已被占用');
+    }
+    let updated: UserRow | null;
+    try {
+      updated = await this.usersRepository.updateUsername(userId, username, current.username);
+    } catch (error) {
+      if (isUniqueViolation(error)) throw new ConflictException('该用户名已被占用');
+      throw error;
+    }
+    if (!updated) {
+      throw new NotFoundException('用户不存在');
+    }
+    return this.toSelf(updated);
+  }
+
+  // ===== 关注 =====
+
+  async follow(idOrUsername: string, viewer: CurrentAuthUser): Promise<{ following: boolean }> {
+    const row = await this.resolveUser(idOrUsername);
+    if (row.id === viewer.id) {
+      throw new BadRequestException('不能关注自己');
+    }
+    if (viewer.role === Role.VISITOR) {
+      throw new ForbiddenException('无权访问该资源');
+    }
+    if (row.status !== UserStatus.ACTIVE) {
+      throw new NotFoundException('用户不存在');
+    }
+    const created = await this.usersRepository.insertFollow(viewer.id, row.id);
+    if (created) {
+      const actorRow = await this.usersRepository.findById(viewer.id);
+      await this.notificationsService.notifyUser(row.id, {
+        type: 'FOLLOW',
+        title: '新的关注者',
+        body: `${actorRow?.nickname ?? '有人'} 关注了你`,
+        link: `/users/${actorRow?.username ?? viewer.id}`,
+      });
+    }
+    return { following: true };
+  }
+
+  async unfollow(idOrUsername: string, viewer: CurrentAuthUser): Promise<{ following: boolean }> {
+    const row = await this.resolveUser(idOrUsername);
+    await this.usersRepository.deleteFollow(viewer.id, row.id);
+    return { following: false };
+  }
+
+  private toFollowUserView(row: UserRow, viewerId: string, followed: boolean): FollowUserView {
+    return {
+      id: row.id,
+      username: row.username,
+      nickname: row.nickname,
+      avatarUrl: row.avatarUrl,
+      role: row.role as Role,
+      bio: row.bio,
+      isSelf: viewerId === row.id,
+      isFollowing: followed,
+    };
+  }
+
+  private async toFollowUserPage(
+    rows: UserRow[],
+    viewer: CurrentAuthUser,
+    total: number,
+    page: number,
+    pageSize: number,
+  ): Promise<Page<FollowUserView>> {
+    const followedIds = await this.usersRepository.filterFollowedIds(
+      viewer.id,
+      rows.map((r) => r.id),
+    );
+    return {
+      items: rows.map((r) => this.toFollowUserView(r, viewer.id, followedIds.has(r.id))),
+      total,
+      page,
+      pageSize,
+    };
+  }
+
+  /** 粉丝列表：本人或 MEMBER+ 互访可见，VISITOR 仅看自己；排除封禁 */
+  async listFollowers(
+    idOrUsername: string,
+    viewer: CurrentAuthUser,
+    page: number,
+    pageSize: number,
+  ): Promise<Page<FollowUserView>> {
+    const row = await this.resolveUser(idOrUsername);
+    if (viewer.role === Role.VISITOR && viewer.id !== row.id) {
+      throw new ForbiddenException('无权访问该资源');
+    }
+    const { rows, total } = await this.usersRepository.listFollowers(row.id, page, pageSize);
+    return this.toFollowUserPage(rows, viewer, total, page, pageSize);
+  }
+
+  /** 关注列表：同粉丝列表可见性 */
+  async listFollowing(
+    idOrUsername: string,
+    viewer: CurrentAuthUser,
+    page: number,
+    pageSize: number,
+  ): Promise<Page<FollowUserView>> {
+    const row = await this.resolveUser(idOrUsername);
+    if (viewer.role === Role.VISITOR && viewer.id !== row.id) {
+      throw new ForbiddenException('无权访问该资源');
+    }
+    const { rows, total } = await this.usersRepository.listFollowing(row.id, page, pageSize);
+    return this.toFollowUserPage(rows, viewer, total, page, pageSize);
   }
 }
 
@@ -650,4 +814,20 @@ export function mergeActivityParts(parts: ActivityParts): { date: string; count:
   return [...merged.entries()]
     .map(([date, count]) => ({ date, count }))
     .sort((a, b) => a.date.localeCompare(b.date));
+}
+
+/** 站内连击：UTC 日连续有贡献的天数；今天没活动则从昨天起算（与 GitHub streak 口径一致） */
+export function computeStreak(days: { date: string; count: number }[], today: Date = new Date()): number {
+  const active = new Set(days.filter((d) => d.count > 0).map((d) => d.date));
+  const cursor = new Date(today);
+  const key = (d: Date) => d.toISOString().slice(0, 10);
+  if (!active.has(key(cursor))) {
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  }
+  let streak = 0;
+  while (active.has(key(cursor))) {
+    streak += 1;
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  }
+  return streak;
 }

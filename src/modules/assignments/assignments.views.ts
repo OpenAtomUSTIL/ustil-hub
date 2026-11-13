@@ -15,6 +15,7 @@ export interface SubmissionView {
 
 export interface AssignmentItem {
   id: string;
+  slug: string;
   title: string;
   description: string;
   startAt: string;
@@ -30,6 +31,7 @@ export interface AssignmentItem {
 export interface MySubmissionItem {
   id: string;
   assignmentId: string;
+  assignmentSlug: string;
   assignmentTitle: string;
   startAt: string;
   deadlineAt: string;

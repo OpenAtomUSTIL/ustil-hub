@@ -1,0 +1,8 @@
+Vendored from https://github.com/Platane/snk (packages/types, packages/solver,
+packages/draw, packages/svg-creator, packages/generate-snake-animation/cellsToGrid.ts
+and palettes.ts). Source files are unmodified except that `@snk/*` workspace imports
+were rewritten to relative paths.
+
+Upstream project: https://github.com/Platane/snk
+Purpose: generate the contribution-grid snake animation SVG (GitHub 同款) from
+USTIL site activity data. Original copyright belongs to the upstream authors.

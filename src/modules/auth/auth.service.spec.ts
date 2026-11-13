@@ -36,6 +36,7 @@ const testConfig: AppConfig = {
 
 const selfFixture: UserSelf = {
   id: '01890a5d-ac96-7000-8000-000000000001',
+  username: 'testuser',
   nickname: '测试用户',
   avatarUrl: null,
   role: Role.MEMBER,

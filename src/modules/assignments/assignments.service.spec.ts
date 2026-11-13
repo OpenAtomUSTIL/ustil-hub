@@ -17,6 +17,7 @@ const now = new Date('2026-01-01T00:00:00.000Z');
 function assignmentRow(overrides: Partial<AssignmentRow> = {}): AssignmentRow {
   return {
     id: '01890a5d-ac96-7000-8000-0000000000b1',
+    slug: '作业一',
     title: '作业一',
     description: '作业描述',
     publisherId: '01890a5d-ac96-7000-8000-000000000001',
@@ -56,6 +57,8 @@ describe('AssignmentsService', () => {
   const assignmentsRepository = {
     list: jest.fn(),
     findById: jest.fn(),
+    findByIdOrSlug: jest.fn(),
+    slugExists: jest.fn(),
     findByIds: jest.fn(),
     insert: jest.fn(),
     update: jest.fn(),
@@ -88,6 +91,8 @@ describe('AssignmentsService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    assignmentsRepository.slugExists.mockResolvedValue(false);
+    assignmentsRepository.findByIdOrSlug.mockImplementation((v) => assignmentsRepository.findById(v));
     const moduleRef = await Test.createTestingModule({
       providers: [
         AssignmentsService,
@@ -230,7 +235,7 @@ describe('AssignmentsService', () => {
     expect(usersService.listUserIdsByRoles).toHaveBeenCalledWith([Role.MEMBER, Role.ALUMNI]);
     expect(notificationsService.notifyUsers).toHaveBeenCalledWith(
       ['u-1', 'u-2'],
-      expect.objectContaining({ type: 'ASSIGNMENT', link: '/assignments/01890a5d-ac96-7000-8000-0000000000b1' }),
+      expect.objectContaining({ type: 'ASSIGNMENT', link: '/assignments/作业一' }),
     );
     expect(auditLogService.record).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'assignment.create' }),
@@ -268,6 +273,7 @@ describe('AssignmentsService', () => {
     expect(result.items[0]).toEqual({
       id: '01890a5d-ac96-7000-8000-0000000000d1',
       assignmentId: '01890a5d-ac96-7000-8000-0000000000b1',
+      assignmentSlug: '作业一',
       assignmentTitle: '作业一',
       startAt: '2025-12-01T00:00:00.000Z',
       deadlineAt: '2999-01-01T00:00:00.000Z',

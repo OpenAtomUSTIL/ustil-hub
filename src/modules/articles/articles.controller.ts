@@ -38,7 +38,7 @@ export class ArticlesController {
   }
 
   @Get(':id')
-  detail(@Param('id', uuidParamPipe) id: string, @CurrentUser() user?: CurrentAuthUser) {
+  detail(@Param('id') id: string, @CurrentUser() user?: CurrentAuthUser) {
     return this.articlesService.getDetail(id, user);
   }
 

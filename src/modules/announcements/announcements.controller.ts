@@ -26,7 +26,7 @@ export class AnnouncementsController {
   }
 
   @Get(':id')
-  detail(@Param('id', uuidParamPipe) id: string) {
+  detail(@Param('id') id: string) {
     return this.announcementsService.getDetail(id);
   }
 

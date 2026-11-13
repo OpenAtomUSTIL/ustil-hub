@@ -14,6 +14,7 @@ const now = new Date('2026-01-01T00:00:00.000Z');
 function issueRow(overrides: Partial<IssueRow> = {}): IssueRow {
   return {
     id: '01890a5d-ac96-7000-8000-0000000000e1',
+    slug: '问题标题',
     title: '问题标题',
     content: '问题内容',
     authorId: '01890a5d-ac96-7000-8000-000000000002',
@@ -44,6 +45,8 @@ describe('IssuesService', () => {
   const issuesRepository = {
     list: jest.fn(),
     findById: jest.fn(),
+    findByIdOrSlug: jest.fn(),
+    slugExists: jest.fn(),
     insert: jest.fn(),
     updateStatus: jest.fn(),
     findReplies: jest.fn(),
@@ -76,6 +79,8 @@ describe('IssuesService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    issuesRepository.slugExists.mockResolvedValue(false);
+    issuesRepository.findByIdOrSlug.mockImplementation((v) => issuesRepository.findById(v));
     const moduleRef = await Test.createTestingModule({
       providers: [
         IssuesService,
@@ -151,7 +156,7 @@ describe('IssuesService', () => {
 
     expect(notificationsService.notifyUser).toHaveBeenCalledWith(
       '01890a5d-ac96-7000-8000-000000000002',
-      expect.objectContaining({ type: 'ISSUE_REPLY', link: '/issues/01890a5d-ac96-7000-8000-0000000000e1' }),
+      expect.objectContaining({ type: 'ISSUE_REPLY', link: '/issues/问题标题' }),
     );
   });
 
