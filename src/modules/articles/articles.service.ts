@@ -105,12 +105,14 @@ export class ArticlesService {
     return user.role === Role.WHEEL || user.role === Role.ADMIN;
   }
 
-  async list(query: ArticlesQueryDto): Promise<Page<ArticleListItem>> {
+  async list(query: ArticlesQueryDto, user?: CurrentAuthUser): Promise<Page<ArticleListItem>> {
     const tagTargetIds = query.tag
       ? await this.tagsService.findTargetIds(TagTargetType.ARTICLE, query.tag)
       : undefined;
-    // 公开列表只展示 PUBLISHED；作者过滤时展示自己的全部状态
-    const statusFilter = query.authorId ? undefined : 'PUBLISHED';
+    // 只有作者本人和审核人员可查询作者的未公开文章。
+    const canViewUnpublished = query.authorId && user &&
+      (query.authorId === user.id || this.isStaff(user));
+    const statusFilter = canViewUnpublished ? undefined : 'PUBLISHED';
     const { rows, total } = await this.articlesRepository.list(query.page, query.pageSize, {
       keyword: query.keyword,
       authorId: query.authorId,
@@ -190,10 +192,11 @@ export class ArticlesService {
       throw new ForbiddenException('已发布的文章需联系管理员修改');
     }
     const names = this.tagsService.normalizeTags(dto.tags);
-    if (dto.title !== undefined || dto.content !== undefined) {
+    if (dto.title !== undefined || dto.content !== undefined || names !== undefined) {
       await this.articlesRepository.update(id, {
         ...(dto.title !== undefined ? { title: dto.title } : {}),
         ...(dto.content !== undefined ? { content: dto.content } : {}),
+        ...(row.status === 'REJECTED' ? { status: 'PENDING', reviewNote: null, reviewedBy: null, reviewedAt: null } : {}),
       });
     }
     if (names !== undefined) {

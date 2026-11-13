@@ -113,7 +113,7 @@ export class ArticlesRepository {
 
   async update(
     id: string,
-    patch: { title?: string; content?: string },
+    patch: { title?: string; content?: string; status?: string; reviewNote?: string | null; reviewedBy?: string | null; reviewedAt?: Date | null },
   ): Promise<ArticleRow | null> {
     const rows = await db
       .update(articles)

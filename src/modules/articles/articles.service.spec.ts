@@ -148,7 +148,7 @@ describe('ArticlesService', () => {
       keyword: undefined,
       authorId: '01890a5d-ac96-7000-8000-000000000001',
       tagTargetIds: ['01890a5d-ac96-7000-8000-0000000000a1'],
-      status: undefined,
+      status: 'PUBLISHED',
     });
   });
 

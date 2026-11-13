@@ -38,3 +38,9 @@ playwright-report
 test-results
 playwright/.auth
 .auth
+
+# 测试仅用于开发验证，不进入交付镜像
+test
+**/__tests__
+**/*.spec.ts
+**/*.test.ts

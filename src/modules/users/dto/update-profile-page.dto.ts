@@ -1,11 +1,11 @@
 import { Transform, Type } from 'class-transformer';
-import { IsArray, IsIn, IsOptional, IsString, MaxLength, ValidateNested } from 'class-validator';
+import { IsArray, IsIn, IsOptional, IsString, IsUUID, MaxLength, ValidateIf, ValidateNested } from 'class-validator';
 
 class PinnedItemDto {
   @IsIn(['ARTICLE', 'ISSUE', 'RESOURCE'], { message: '置顶类型必须是 ARTICLE/ISSUE/RESOURCE' })
   type!: 'ARTICLE' | 'ISSUE' | 'RESOURCE';
 
-  @IsString({ message: '置顶 ID 必须是字符串' })
+  @IsUUID(undefined, { message: '置顶 ID 必须是 UUID' })
   id!: string;
 }
 
@@ -21,7 +21,7 @@ export class UpdateProfilePageDto {
   @MaxLength(10000, { message: '个人介绍不能超过 10000 个字符' })
   profileReadme?: string | null;
 
-  @IsOptional()
+  @ValidateIf((_object, value: unknown) => value !== undefined)
   @IsArray({ message: '置顶内容必须是数组' })
   @ValidateNested({ each: true })
   @Type(() => PinnedItemDto)

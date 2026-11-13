@@ -227,6 +227,8 @@ TagView = { id: string; name: string; count: number }
   }
   ```
 
+- 可见性：默认仅返回 `PUBLISHED`。按 `authorId` 过滤时，只有作者本人或 `WHEEL` / `ADMIN` 可查看该作者的全部状态。
+
 ### 3.2 文章详情 `GET /api/v1/articles/:id`
 
 - 权限：🔐 登录
@@ -249,6 +251,8 @@ TagView = { id: string; name: string; count: number }
 - 成功：`200`，返回 `ArticleDetail`
 - 失败：`403` 非作者/角色不足；`404` 文章不存在
 
+- `MEMBER` 可修改本人 `PENDING` / `REJECTED` 文章；修改被拒文章的标题、正文或标签后重新进入 `PENDING`，并清空上次审核结果。
+
 ### 3.5 删除文章 `DELETE /api/v1/articles/:id`
 
 - 权限：🛡️ `ALUMNI`/`WHEEL`/`ADMIN` + 👤 作者本人，或 🛡️ `ADMIN` 删除任意文章
@@ -256,6 +260,12 @@ TagView = { id: string; name: string; count: number }
 - 失败：`403` 非作者且非管理员
 
 ---
+
+### 3.6 待审列表 `GET /api/v1/articles/pending`
+
+- 权限：`WHEEL` / `ADMIN`。
+- 查询：`page`（正整数，默认 1）、`pageSize`（1–100，默认 20）；非法值返回 400。
+- 返回：`Page<ArticleListItem>`。
 
 ## 4. 作业 `/api/v1/assignments`
 

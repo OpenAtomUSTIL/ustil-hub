@@ -463,7 +463,7 @@ export class UsersRepository {
     const articleIds = db.select({ id: articles.id }).from(articles)
       .where(and(eq(articles.authorId, userId), isNull(articles.deletedAt), eq(articles.status, 'PUBLISHED')));
     const issueIds = db.select({ id: issues.id }).from(issues).where(eq(issues.authorId, userId));
-    const resourceIds = db.select({ id: resources.id }).from(resources).where(eq(resources.creatorId, userId));
+    const resourceIds = db.select({ id: resources.id }).from(resources).where(and(eq(resources.creatorId, userId), isNull(resources.deletedAt)));
 
     const rows = await db
       .select({ name: tags.name, count: sql<number>`count(*)::int` })
@@ -517,7 +517,7 @@ export class UsersRepository {
     const [articleDays, issueDays, replyDays, subDays, resDays] = await Promise.all([
       db.select({ date: articleDay, count: sql<number>`count(*)::int` })
         .from(articles)
-        .where(and(eq(articles.authorId, userId), isNull(articles.deletedAt), gte(articles.createdAt, since)))
+        .where(and(eq(articles.authorId, userId), isNull(articles.deletedAt), eq(articles.status, 'PUBLISHED'), gte(articles.createdAt, since)))
         .groupBy(articleDay),
       db.select({ date: issueDay, count: sql<number>`count(*)::int` })
         .from(issues)
@@ -562,7 +562,7 @@ export class UsersRepository {
       const rows = await db
         .select({ id: articles.id, slug: articles.slug, title: articles.title, ownerId: articles.authorId })
         .from(articles)
-        .where(and(inArray(articles.id, articleIds), isNull(articles.deletedAt)));
+        .where(and(inArray(articles.id, articleIds), isNull(articles.deletedAt), eq(articles.status, 'PUBLISHED')));
       for (const r of rows) {
         result.push({ type: 'ARTICLE', id: r.id, slug: r.slug, title: r.title, ownerId: r.ownerId });
       }

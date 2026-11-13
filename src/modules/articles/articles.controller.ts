@@ -13,6 +13,7 @@ import { CurrentAuthUser, CurrentUser } from '../../common/decorators/current-us
 
 import { Roles, Role } from '../../common/decorators/roles.decorator';
 import { uuidParamPipe } from '../../common/pipes/uuid-param.pipe';
+import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { ArticlesService } from './articles.service';
 import { ArticlesQueryDto } from './dto/articles-query.dto';
 import { CreateArticleDto } from './dto/create-article.dto';
@@ -24,16 +25,16 @@ export class ArticlesController {
   constructor(private readonly articlesService: ArticlesService) {}
 
   @Get()
-  list(@Query() query: ArticlesQueryDto) {
-    return this.articlesService.list(query);
+  list(@Query() query: ArticlesQueryDto, @CurrentUser() user: CurrentAuthUser) {
+    return this.articlesService.list(query, user);
   }
 
   @Get('pending')
   @Roles(Role.WHEEL, Role.ADMIN)
-  listPending(@Query('page') page: string, @Query('pageSize') pageSize: string) {
+  listPending(@Query() query: PaginationQueryDto) {
     return this.articlesService.listPending(
-      Number(page) || 1,
-      Number(pageSize) || 20,
+      query.page,
+      query.pageSize,
     );
   }
 
