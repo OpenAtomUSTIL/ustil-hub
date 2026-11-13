@@ -40,6 +40,9 @@
 - **时间**：一律 ISO 8601 UTC 字符串（`2026-11-09T03:04:10.212Z`）。
 - **校验**：全局 `ValidationPipe` 开启 `whitelist + forbidNonWhitelisted`，请求体中出现未声明字段直接 400。
 - **标题与昵称**：创建、更新时去除首尾空白后校验；纯空白返回 400，标题最长 200 字符、昵称最长 50 字符。
+- **slug 寻址（去 id 化）**：文章 / 作业 / 公告 / 资源 / Issue 创建时由标题生成唯一 slug（URL 不暴露裸 id）。
+  **读接口**（详情类 `GET .../:id`）的 `:id` 可传 **uuid 或 slug**（uuid 优先匹配）；**写接口**（编辑 / 删除 / 审核 / 状态变更 / 回复 / 提交）仅接受 uuid，传 slug 返回 400。
+  用户接口 `:id` 可传 **uuid 或 username**（`POST :id/ban`、`POST :id/unban` 除外，仅 uuid）。
 - **标签**：`tags` 可省略，更新时 `[]` 表示清空；显式 `null` 返回 400。
 - **公告布尔值**：`pinned`、`notify` 可省略，必须是布尔值；`null` 或字符串 `"false"` 返回 400。
 - **作业输入时间**：`startAt`、`deadlineAt` 必须是带 `Z` 的 ISO 8601 UTC 字符串（秒必填，毫秒可选、最多 3 位）；数字时间戳、无时区时间及无效日历日期返回 400。
@@ -72,6 +75,7 @@
 // 用户公开资料（author / creator / submitter 等字段）
 UserPublic = {
   id: string;          // uuid v7
+  username: string;    // 主页 handle（2-32 位字母/数字/-/_，全站唯一，小写）
   nickname: string;
   avatarUrl: string | null;
   role: 'VISITOR' | 'MEMBER' | 'ALUMNI' | 'WHEEL' | 'ADMIN';
@@ -80,6 +84,7 @@ UserPublic = {
 // 本人资料（仅本人接口返回，含私有字段）
 UserSelf = {
   id: string;
+  username: string;
   nickname: string;
   avatarUrl: string | null;
   role: 'VISITOR' | 'MEMBER' | 'ALUMNI' | 'WHEEL' | 'ADMIN';
@@ -147,7 +152,8 @@ TagView = { id: string; name: string; count: number }
 
 - 权限：🌐 公开（依赖 `refresh_token` Cookie）
 - 说明：轮换 token —— 旧 `jti` 立即作废并签发新对；旧 `jti` 复用视为窃取，清除该用户全部 refresh 并强制重登
-- 成功：`201`，返回 `UserSelf`，写入新双 token Cookie
+- 成功：`201`，返回 **`UserPublic`**（脱敏，仅 `id/username/nickname/avatarUrl/role`，**不含** `email`/`phone`），写入新双 token Cookie
+  - 前端登录态恢复一律以 `GET /auth/me` 为 `UserSelf` 来源
 - 失败：`401` refresh 缺失/无效/已作废
 
 ### 1.5 登出 `POST /api/v1/auth/logout`
@@ -171,6 +177,8 @@ TagView = { id: string; name: string; count: number }
 
 ## 2. 用户 `/api/v1/users`
 
+> `:id` 路径参数均可传 **uuid 或 username**（uuid 优先匹配）；仅 2.6 / 2.7 封禁类接口限定 uuid。
+
 ### 2.1 修改本人资料 `PATCH /api/v1/users/me`
 
 - 权限：🔐 登录（仅本人）
@@ -188,32 +196,154 @@ TagView = { id: string; name: string; count: number }
 - 成功：`200`，返回 `UserSelf`
 - 失败：`400` 当前密码错误/格式非法；`409` 已被其它账号绑定
 
-### 2.3 上传头像 `POST /api/v1/users/me/avatar`
+### 2.3 修改主页用户名 `PUT /api/v1/users/me/username`
+
+- 权限：🔐 登录（仅本人）
+- 请求体：`{ "username": "2-32 位，仅字母/数字/-/_" }`
+- 说明：自动 trim 并转小写；改名写入 `user_username_history` 历史记录；原名不再占用
+- 成功：`200`，返回 `UserSelf`（传入与当前相同的名字直接成功返回）
+- 失败：`400` 格式非法；`409` 已被占用
+
+### 2.4 上传头像 `POST /api/v1/users/me/avatar`
 
 - 权限：🔐 登录（仅本人）
 - 请求体：`multipart/form-data`，字段 `file`（白名单 + ≤10MB）
 - 成功：`201`，返回 `UserSelf`
 - 失败：`400` 格式或大小不合规
 
-### 2.4 封禁账号 `POST /api/v1/users/:id/ban`
+### 2.5 编辑个人主页 `PUT /api/v1/users/me/profile-page`
 
-- 权限：🛡️ 仅 `ADMIN`（`ADMIN` 账号不可被封禁，403）
+- 权限：🔐 登录（仅本人）
+- 请求体（字段均可选，传 `null` 清空对应字段）：
+  ```json
+  {
+    "bio": "短简介，≤100 字符",
+    "profileReadme": "个人介绍（长文），≤10000 字符",
+    "pinnedItems": [ { "type": "ARTICLE | ISSUE | RESOURCE", "id": "uuid" } ]
+  }
+  ```
+- 约束：`pinnedItems` ≤6 项、不得重复、目标必须存在且**属于本人**（否则 400）；省略表示不动，`[]` 清空
+- 成功：`200`（空响应）
+- 失败：`400` 超长/超量/重复/不属于本人；`404` 用户不存在
+
+### 2.6 封禁账号 `POST /api/v1/users/:id/ban`
+
+- 权限：🛡️ 仅 `ADMIN`（`ADMIN` 账号不可被封禁，403；仅 uuid 寻址）
 - 成功：`201`，返回 `{ "id": string, "status": "BANNED" }`
 - 说明：封禁立即吊销该用户全部 refresh 并递增 `sessionVersion`；之后请求直接 403
 
-### 2.5 解封账号 `POST /api/v1/users/:id/unban`
+### 2.7 解封账号 `POST /api/v1/users/:id/unban`
 
-- 权限：🛡️ 仅 `ADMIN`
+- 权限：🛡️ 仅 `ADMIN`（仅 uuid 寻址）
 - 成功：`201`，返回 `{ "id": string, "status": "ACTIVE" }`
 
-### 2.6 查看他人公开资料 `GET /api/v1/users/:id`
+### 2.8 查看他人公开资料 `GET /api/v1/users/:id`
 
 - 权限：🔐 登录
-- 成功：`200`，返回 `UserPublic`（仅昵称/头像/角色；**任何人**不可查看他人邮箱、手机号）
+- 成功：`200`，返回 `UserPublic`（`id/username/nickname/avatarUrl/role`；**任何人**不可查看他人邮箱、手机号）
+
+### 2.9 个人主页 `GET /api/v1/users/:id/profile`
+
+- 权限：🔐 登录（`VISITOR` 仅可访问**本人**主页，访问他人 403）
+- 成功：`200`，返回 `UserProfileView`
+  ```ts
+  UserProfileView = {
+    id, username, nickname, avatarUrl, role,
+    bio: string | null,
+    profileReadme: string | null,
+    createdAt,
+    stats: { articles, issues, replies, submissions },   // 聚合计数（软删不计）
+    topTags: { name: string, count: number }[],          // 至多 10 项
+    pinnedItems: { type, id, slug, title, url? }[],      // 仅保留仍存在且未软删的目标
+    isSelf: boolean,
+    isFollowing: boolean,
+    followerCount: number, followingCount: number,
+    email?: string, phone?: string                       // 仅 isSelf 时返回
+  }
+  ```
+
+### 2.10 活跃热力图 `GET /api/v1/users/:id/activity`
+
+- 权限：🔐 登录（`VISITOR` 仅本人）
+- 说明：近一年（UTC 日）五类事件按日求和、按日期升序
+- 成功：`200`，返回 `{ "days": [{ "date": "YYYY-MM-DD", "count": number }] }`
+
+### 2.11 回复列表 `GET /api/v1/users/:id/replies`
+
+- 权限：🔐 登录（`VISITOR` 仅本人）
+- 查询参数：`page`、`pageSize`
+- 成功：`200`，返回 `Page<ProfileReplyView>`
+  ```ts
+  ProfileReplyView = {
+    id, issueId, issueSlug, issueTitle,
+    content, createdAt
+  }
+  ```
+
+### 2.12 关注 `POST /api/v1/users/:id/follow`
+
+- 权限：🔐 登录（`MEMBER` 及以上；`VISITOR` 403）
+- 说明：幂等（重复关注仍成功）；不能关注自己（400）；目标须 `ACTIVE`（封禁/不存在 404）；
+  首次关注向对方发送 `FOLLOW` 站内通知
+- 成功：`201`，返回 `{ "following": true }`
+
+### 2.13 取关 `DELETE /api/v1/users/:id/follow`
+
+- 权限：🔐 登录（`MEMBER` 及以上；`VISITOR` 403）
+- 说明：幂等（未关注也成功）
+- 成功：`200`，返回 `{ "following": false }`
+
+### 2.14 粉丝列表 `GET /api/v1/users/:id/followers`
+
+- 权限：🔐 登录（`VISITOR` 仅本人）
+- 查询参数：`page`、`pageSize`；排除封禁用户
+- 成功：`200`，返回 `Page<FollowUserView>`
+  ```ts
+  FollowUserView = {
+    id, username, nickname, avatarUrl, role,
+    bio: string | null,
+    isSelf: boolean,
+    isFollowing: boolean   // 当前访问者是否已关注该用户
+  }
+  ```
+
+### 2.15 关注列表 `GET /api/v1/users/:id/following`
+
+- 权限与响应同 2.14。
+
+### 2.16 社区数据徽章（JSON）`GET /api/v1/users/:username/stats-badge`
+
+- 权限：🌐 公开（仅聚合计数，无私有字段；仅 **username** 寻址）
+- 说明：shields.io endpoint 协议；`Cache-Control: public, max-age=300`
+- 成功：`200`，返回徽章数组
+  ```json
+  [ { "schemaVersion": 1, "label": "文章", "message": "12", "color": "2575fc" } ]
+  ```
+  - 六枚：文章 / 讨论 / 回复 / 提交 / 近一年贡献 / 站内连击（`"N 天"`）
+
+### 2.17 社区数据徽章（SVG）`GET /api/v1/users/:username/stats-badge.svg`
+
+- 权限：🌐 公开（仅 **username** 寻址）
+- 说明：站内自绘 SVG（shields.io 不可达时的备用），供 README `<img>` 引用；`Cache-Control: public, max-age=300`
+- 成功：`200`，返回 `image/svg+xml`
+
+### 2.18 贡献贪吃蛇 `GET /api/v1/users/:username/snake.svg`
+
+- 权限：🌐 公开（仅 **username** 寻址）
+- 查询参数：`theme`（`dark` | 其他值默认 `light`）
+- 说明：定时任务预生成的动画 SVG（@platane/snk 同款）；`Cache-Control: public, max-age=3600`
+- 成功：`200`，返回 `image/svg+xml`
+
+---
 
 ---
 
 ## 3. 文章 `/api/v1/articles`
+
+状态枚举：`PENDING`（待审）/ `PUBLISHED`（已发布）/ `REJECTED`（已拒绝）/ `HIDDEN`（已隐藏）。
+- `MEMBER` 发文**先审后发**：创建即 `PENDING`；`ALUMNI`/`WHEEL`/`ADMIN` **先发后审**：创建即 `PUBLISHED`（可被隐藏）。
+- 非 `PUBLISHED` 文章仅**作者**与 `WHEEL`/`ADMIN` 可见（他人访问详情 404）。
+- 审核记录 `reviewedBy` / `reviewedAt` / `reviewNote`；拒绝/隐藏备注经 `ArticleDetail.reviewNote` 对作者可见。
 
 ### 3.1 文章列表 `GET /api/v1/articles`
 
@@ -222,7 +352,8 @@ TagView = { id: string; name: string; count: number }
 - 成功：`200`，返回 `Page<ArticleListItem>`
   ```ts
   ArticleListItem = {
-    id, title, excerpt, tags: string[],
+    id, slug, title, excerpt, tags: string[],
+    status: 'PENDING' | 'PUBLISHED' | 'REJECTED' | 'HIDDEN',
     author: UserPublic, createdAt, updatedAt
   }
   ```
@@ -232,32 +363,42 @@ TagView = { id: string; name: string; count: number }
 ### 3.2 文章详情 `GET /api/v1/articles/:id`
 
 - 权限：🔐 登录
-- 成功：`200`，返回 `ArticleDetail`（`ArticleListItem` 去掉 `excerpt` 加 `content`）
+- 路径参数：`id` = uuid 或 **slug**
+- 成功：`200`，返回 `ArticleDetail`
+  ```ts
+  ArticleDetail = {
+    id, slug, title, content, tags: string[],
+    status, reviewNote: string | null,
+    author: UserPublic, createdAt, updatedAt
+  }
+  ```
 
 ### 3.3 创建文章 `POST /api/v1/articles`
 
-- 权限：🛡️ 仅 `ADMIN`、`ALUMNI`、`WHEEL`
+- 权限：🛡️ 仅 `MEMBER`、`ALUMNI`、`WHEEL`、`ADMIN`
 - 请求体：
   ```json
   { "title": "≤200 字符", "content": "正文", "tags": ["标签", "..."] }
   ```
   - `tags` 可选：数组 ≤10 项，每项 ≤30 字符
+- 说明：`MEMBER` 创建后进 `PENDING` 待审（3.7 审核通过后可见）；其余角色直接 `PUBLISHED`
 - 成功：`201`，返回 `ArticleDetail`
 
 ### 3.4 编辑文章 `PATCH /api/v1/articles/:id`
 
-- 权限：🛡️ `ALUMNI`/`WHEEL`/`ADMIN` + 👤 仅作者本人（**`ADMIN` 也不能编辑他人文章**）
+- 权限：🛡️ `MEMBER`/`ALUMNI`/`WHEEL`/`ADMIN` + 👤 仅作者本人（**`ADMIN` 也不能编辑他人文章**；仅 uuid 寻址）
 - 请求体（字段可选）：`{ "title"?, "content"?, "tags"? }`
 - 成功：`200`，返回 `ArticleDetail`
 - 失败：`403` 非作者/角色不足；`404` 文章不存在
 
-- `MEMBER` 可修改本人 `PENDING` / `REJECTED` 文章；修改被拒文章的标题、正文或标签后重新进入 `PENDING`，并清空上次审核结果。
+- `MEMBER` 只能修改本人 `PENDING` / `REJECTED` 文章（已发布文章 403「已发布的文章需联系管理员修改」）；
+  修改被拒文章的标题、正文或标签后重新进入 `PENDING`，并清空上次审核结果。
 
 ### 3.5 删除文章 `DELETE /api/v1/articles/:id`
 
-- 权限：🛡️ `ALUMNI`/`WHEEL`/`ADMIN` + 👤 作者本人，或 🛡️ `ADMIN` 删除任意文章
+- 权限：🛡️ `MEMBER`/`ALUMNI`/`WHEEL`/`ADMIN` + 👤 作者本人，或 🛡️ `ADMIN` 删除任意文章（仅 uuid 寻址）
 - 成功：`204`（软删进回收站，可经 11.12 还原）
-- 失败：`403` 非作者且非管理员
+- 失败：`403` 非作者且非管理员；`MEMBER` 仅可删除本人 `PENDING` / `REJECTED` 文章
 
 ---
 
@@ -265,7 +406,27 @@ TagView = { id: string; name: string; count: number }
 
 - 权限：`WHEEL` / `ADMIN`。
 - 查询：`page`（正整数，默认 1）、`pageSize`（1–100，默认 20）；非法值返回 400。
-- 返回：`Page<ArticleListItem>`。
+- 返回：`Page<ArticleListItem>`（全部 `PENDING`）。
+
+### 3.7 文章审核 `POST /api/v1/articles/:id/review`
+
+- 权限：🛡️ 仅 `WHEEL`、`ADMIN`（仅 uuid 寻址）
+- 请求体：
+  ```json
+  { "action": "approve | reject | hide | unhide", "note": "可选，审核备注 ≤500 字符" }
+  ```
+- 状态机（不满足返回 `409`）：
+
+  | action | 前置状态 | 结果状态 |
+  |---|---|---|
+  | `approve` | `PENDING` | `PUBLISHED` |
+  | `reject` | `PENDING` | `REJECTED` |
+  | `hide` | `PUBLISHED` | `HIDDEN` |
+  | `unhide` | `HIDDEN` | `PUBLISHED` |
+
+- 说明：记录 `reviewedBy` / `reviewedAt` / `reviewNote`
+- 成功：`200`，返回 `ArticleDetail`
+- 失败：`409` 状态不符（如「仅待审文章可通过」）；`404` 文章不存在
 
 ## 4. 作业 `/api/v1/assignments`
 
@@ -285,7 +446,7 @@ TagView = { id: string; name: string; count: number }
 - 成功：`200`，返回 `Page<AssignmentItem>`
   ```ts
   AssignmentItem = {
-    id, title, description,
+    id, slug, title, description,
     startAt, deadlineAt,
     state: 'NOT_STARTED' | 'OPEN' | 'CLOSED',
     canSubmit: boolean,           // 仅 MEMBER/ALUMNI 且 state === 'OPEN' 时为 true
@@ -307,7 +468,7 @@ TagView = { id: string; name: string; count: number }
 - 成功：`200`，返回 `Page<MySubmissionItem>`
   ```ts
   MySubmissionItem = {
-    id, assignmentId, assignmentTitle,
+    id, assignmentId, assignmentSlug, assignmentTitle,
     startAt, deadlineAt,
     state: 'NOT_STARTED' | 'OPEN' | 'CLOSED',
     note: string | null,
@@ -319,6 +480,7 @@ TagView = { id: string; name: string; count: number }
 ### 4.3 作业详情 `GET /api/v1/assignments/:id`
 
 - 权限：🔐 登录（`VISITOR` 403）
+- 路径参数：`id` = uuid 或 **slug**
 - 成功：`200`，返回 `AssignmentItem`
 
 ### 4.4 下载作业附件 `GET /api/v1/assignments/files/:attachmentId`
@@ -382,7 +544,7 @@ TagView = { id: string; name: string; count: number }
 - 成功：`200`，返回 `Page<IssueListItem>`
   ```ts
   IssueListItem = {
-    id, title, tags: string[],
+    id, slug, title, tags: string[],
     status: 'OPEN' | 'ANSWERED' | 'ON_HOLD',
     author: UserPublic,
     replyCount: number,
@@ -395,6 +557,7 @@ TagView = { id: string; name: string; count: number }
 ### 5.2 Issue 详情 `GET /api/v1/issues/:id`
 
 - 权限：🔐 登录
+- 路径参数：`id` = uuid 或 **slug**
 - 成功：`200`，返回 `IssueDetail`（`IssueListItem` + `content` + `replies`）
   ```ts
   ReplyView = { id, content, author: UserPublic, createdAt }
@@ -429,9 +592,9 @@ TagView = { id: string; name: string; count: number }
 - 成功：`200`，返回 `Page<AnnouncementItem>`
   ```ts
   AnnouncementItem = {
-    id, title, content,
+    id, slug, title, content,
     pinned: boolean,
-    authorId: string, authorName: string,
+    authorId: string, authorName: string, authorUsername: string,
     createdAt, updatedAt
   }
   ```
@@ -439,6 +602,7 @@ TagView = { id: string; name: string; count: number }
 ### 6.2 公告详情 `GET /api/v1/announcements/:id`
 
 - 权限：🔐 登录
+- 路径参数：`id` = uuid 或 **slug**
 - 成功：`200`，返回 `AnnouncementItem`
 
 ### 6.3 发布公告 `POST /api/v1/announcements`
@@ -475,12 +639,12 @@ TagView = { id: string; name: string; count: number }
 - 成功：`200`，返回 `Page<ResourceItem>`
   ```ts
   ResourceItem = {
-    id, title,
+    id, slug, title,
     description: string | null,
     url: string,
     category: 'GITHUB' | 'EXAM' | 'EBOOK' | 'DOCUMENT' | 'OTHER',
     tags: string[],
-    creatorId: string, creatorName: string,
+    creatorId: string, creatorName: string, creatorUsername: string,
     createdAt, updatedAt
   }
   ```
@@ -488,6 +652,7 @@ TagView = { id: string; name: string; count: number }
 ### 7.2 资源详情 `GET /api/v1/resources/:id`
 
 - 权限：🔐 登录
+- 路径参数：`id` = uuid 或 **slug**
 - 成功：`200`，返回 `ResourceItem`
 
 ### 7.3 创建资源 `POST /api/v1/resources`
@@ -530,7 +695,7 @@ TagView = { id: string; name: string; count: number }
 
 ## 9. 通知 `/api/v1/notifications`
 
-站内通知，类型枚举：`ANNOUNCEMENT | ASSIGNMENT | ISSUE_REPLY | ROLE | SYSTEM`。
+站内通知，类型枚举：`ANNOUNCEMENT | ASSIGNMENT | ISSUE_REPLY | ROLE | SYSTEM | FOLLOW`。
 均只操作**本人**通知。
 
 ### 9.1 通知列表 `GET /api/v1/notifications`
@@ -541,7 +706,7 @@ TagView = { id: string; name: string; count: number }
   ```ts
   NotificationItem = {
     id,
-    type: 'ANNOUNCEMENT' | 'ASSIGNMENT' | 'ISSUE_REPLY' | 'ROLE' | 'SYSTEM',
+    type: 'ANNOUNCEMENT' | 'ASSIGNMENT' | 'ISSUE_REPLY' | 'ROLE' | 'SYSTEM' | 'FOLLOW',
     title,
     body: string | null,
     link: string | null,
@@ -822,11 +987,16 @@ TagView = { id: string; name: string; count: number }
 |---|:---:|:---:|:---:|:---:|:---:|
 | 注册 / 登录 / 刷新 / 登出 / 改本人密码 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 持邀请码转正（VISITOR→MEMBER） | ✅ | ❌ | ❌ | ❌ | ❌ |
-| 改本人资料 / 换绑 / 头像 | ✅ | ✅ | ✅ | ✅ | ✅（不可换绑） |
+| 改本人资料 / 换绑 / 头像 / 用户名 / 个人主页 | ✅ | ✅ | ✅ | ✅ | ✅（不可换绑） |
 | 查看他人公开资料 | ✅ | ✅ | ✅ | ✅ | ✅ |
 | 查看他人邮箱、手机号 | ❌ | ❌ | ❌ | ❌ | ❌ |
+| 互访个人主页 / 活跃 / 回复 / 粉丝列表 | 仅本人 | ✅ | ✅ | ✅ | ✅ |
+| 关注 / 取关成员 | ❌ | ✅ | ✅ | ✅ | ✅ |
+| 社区徽章 / 贪吃蛇（公开聚合数据） | ✅（含匿名访问） | ✅ | ✅ | ✅ | ✅ |
 | 浏览文章 / 公告 / 资源 / 标签 | ✅ | ✅ | ✅ | ✅ | ✅ |
-| 创建、编辑、删除**本人**文章 | ❌ | ❌ | ✅ | ✅ | ✅ |
+| 创建文章 | ❌ | ✅（先审后发） | ✅ | ✅ | ✅ |
+| 编辑、删除**本人**文章 | ❌ | ✅（限待审/被拒） | ✅ | ✅ | ✅ |
+| 审核文章（通过/拒绝/隐藏） | ❌ | ❌ | ❌ | ✅ | ✅ |
 | 删除**他人**文章 / 删除他人内容 | ❌ | ❌ | ❌ | ❌ | ✅ |
 | 浏览作业 / 查看我的提交 | ❌ | ✅ | ✅ | ✅ | ✅ |
 | 发布、编辑作业 | ❌ | ❌ | ✅ | ✅ | ✅（编辑任意） |
@@ -846,7 +1016,8 @@ TagView = { id: string; name: string; count: number }
 - 所有涉及"本人"的操作在 service 层校验归属（`authorId === currentUser.id` 等），前端隐藏按钮不构成权限。
 - 被封禁账号（`status = 'BANNED'`）在 `JwtAuthGuard` 直接 403。
 - `ADMIN` 账号不可被改角色 / 删除 / 封禁（service 层 403）。
-- `VISITOR` 全面禁入作业模块（列表/详情/提交/附件/提交记录均 403）。
+- `VISITOR` 全面禁入作业模块（列表/详情/提交/附件/提交记录均 403）；个人主页 / 关注 / 活跃等社交接口对 `VISITOR` 仅开放本人数据。
+- **slug 寻址**：详情类读接口 `:id` 可传 uuid 或 slug；写接口（编辑/删除/审核/回复/提交等）仅 uuid。用户接口 `:id` 可传 uuid 或 username（封禁/解封仅 uuid）。
 - **软删除语义**：文章/公告/资源/评论（讨论回复）的 `DELETE` 一律为软删（置 `deleted_at`）进回收站，
   可经 `POST /admin/trash/:type/:id/restore` 还原；软删期间列表/详情/搜索/tag 过滤/tag 计数均排除软删行
   （详情 404），`taggings` 保留、恢复后完整可见；审计 `detail` 保留删除前快照（标题/正文前 200 字）。
