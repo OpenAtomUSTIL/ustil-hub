@@ -41,6 +41,7 @@ describe('ResourcesService', () => {
   };
   const usersService = {
     getPublicByIds: jest.fn(),
+    resolveRowByIdentifier: jest.fn(),
   };
   const tagsService = {
     normalizeTags: jest.fn((tags?: string[]) => tags),
@@ -180,5 +181,29 @@ describe('ResourcesService', () => {
       keyword: undefined,
       tagTargetIds: [],
     });
+  });
+
+  it('列表按 creatorId 过滤：解析式寻址命中后按 userId 过滤', async () => {
+    usersService.resolveRowByIdentifier.mockResolvedValue({ id: '01890a5d-ac96-7000-8000-000000000001' });
+    resourcesRepository.list.mockResolvedValue({ rows: [], total: 0 });
+
+    await service.list({ page: 1, pageSize: 20, creatorId: '13800138000' });
+
+    expect(usersService.resolveRowByIdentifier).toHaveBeenCalledWith('13800138000');
+    expect(resourcesRepository.list).toHaveBeenCalledWith(1, 20, {
+      category: undefined,
+      keyword: undefined,
+      creatorId: '01890a5d-ac96-7000-8000-000000000001',
+      tagTargetIds: undefined,
+    });
+  });
+
+  it('列表 creatorId 解析不到：返回空列表（过滤语义不报错）', async () => {
+    usersService.resolveRowByIdentifier.mockResolvedValue(null);
+
+    const result = await service.list({ page: 1, pageSize: 20, creatorId: 'ghost@example.com' });
+
+    expect(result).toEqual({ items: [], total: 0, page: 1, pageSize: 20 });
+    expect(resourcesRepository.list).not.toHaveBeenCalled();
   });
 });

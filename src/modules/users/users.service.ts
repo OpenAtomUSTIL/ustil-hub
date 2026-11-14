@@ -10,6 +10,7 @@ import { requireRole } from '../../common/permissions';
 import { REFRESH_TOKEN_STORE, RefreshTokenStore } from '../../db/redis';
 import { UserStatus } from '../../db/schema';
 import { AuditLogService } from '../audit/audit-log.service';
+import { CaptchaService } from '../captcha/captcha.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { TagsService } from '../tags/tags.service';
 import { UploadsService, UploadedFileInput } from '../storage/uploads.service';
@@ -49,6 +50,7 @@ export class UsersService {
     private readonly notificationsService: NotificationsService,
     private readonly auditLogService: AuditLogService,
     private readonly tagsService: TagsService,
+    private readonly captchaService: CaptchaService,
     @Inject(REFRESH_TOKEN_STORE) private readonly refreshStore: RefreshTokenStore,
   ) {}
 
@@ -123,6 +125,11 @@ export class UsersService {
     return row ? this.toAuthRecord(row) : null;
   }
 
+  /** 解析式寻址（v6.0）：uuid / 用户名（含历史）/ 邮箱 / 手机号 → UserRow；未命中 null，语义由调用方决定 */
+  async resolveRowByIdentifier(identifier: string): Promise<UserRow | null> {
+    return this.usersRepository.findByIdentifier(identifier);
+  }
+
   async getAuthRecordById(id: string): Promise<UserAuthRecord | null> {
     const row = await this.usersRepository.findById(id);
     return row ? this.toAuthRecord(row) : null;
@@ -190,6 +197,7 @@ export class UsersService {
   }
 
   async changeIdentifier(id: string, dto: ChangeIdentifierDto): Promise<UserSelf> {
+    await this.captchaService.validate(dto.captchaId, dto.captchaCode);
     const row = await this.usersRepository.findById(id);
     if (!row) {
       throw new NotFoundException('用户不存在');
@@ -245,36 +253,36 @@ export class UsersService {
     }
   }
 
-  private async requireNonAdmin(id: string): Promise<UserRow> {
-    const row = await this.usersRepository.findById(id);
+  private async requireNonAdmin(identifier: string): Promise<UserRow> {
+    const row = await this.usersRepository.findByIdentifier(identifier);
     if (!row) throw new NotFoundException('用户不存在');
     if (row.role === Role.ADMIN) throw new ForbiddenException('不可修改管理员账号');
     return row;
   }
 
-  async ban(id: string, actor: CurrentAuthUser): Promise<{ id: string; status: UserStatus }> {
+  async ban(identifier: string, actor: CurrentAuthUser): Promise<{ id: string; status: UserStatus }> {
     requireRole(actor, Role.ADMIN);
-    await this.requireNonAdmin(id);
-    const row = await this.usersRepository.updateStatus(id, UserStatus.BANNED);
+    const target = await this.requireNonAdmin(identifier);
+    const row = await this.usersRepository.updateStatus(target.id, UserStatus.BANNED);
     if (!row) {
       throw new NotFoundException('用户不存在');
     }
     // 封禁立即吊销全部 refresh token
-    await this.refreshStore.revokeAll(id);
+    await this.refreshStore.revokeAll(target.id);
     await this.auditLogService.record({
       actor,
       action: 'user.ban',
       targetType: 'USER',
-      targetId: id,
+      targetId: target.id,
       detail: { from: 'ACTIVE', to: 'BANNED' },
     });
     return { id: row.id, status: row.status };
   }
 
-  async unban(id: string, actor: CurrentAuthUser): Promise<{ id: string; status: UserStatus }> {
+  async unban(identifier: string, actor: CurrentAuthUser): Promise<{ id: string; status: UserStatus }> {
     requireRole(actor, Role.ADMIN);
-    await this.requireNonAdmin(id);
-    const row = await this.usersRepository.updateStatus(id, UserStatus.ACTIVE);
+    const target = await this.requireNonAdmin(identifier);
+    const row = await this.usersRepository.updateStatus(target.id, UserStatus.ACTIVE);
     if (!row) {
       throw new NotFoundException('用户不存在');
     }
@@ -282,7 +290,7 @@ export class UsersService {
       actor,
       action: 'user.unban',
       targetType: 'USER',
-      targetId: id,
+      targetId: target.id,
       detail: { from: 'BANNED', to: 'ACTIVE' },
     });
     return { id: row.id, status: row.status };
@@ -328,25 +336,25 @@ export class UsersService {
     };
   }
 
-  async updateRole(id: string, role: Exclude<Role, 'ADMIN'>, actor: CurrentAuthUser): Promise<AdminUserView> {
+  async updateRole(identifier: string, role: Exclude<Role, 'ADMIN'>, actor: CurrentAuthUser): Promise<AdminUserView> {
     requireRole(actor, Role.ADMIN);
     if (![Role.VISITOR, Role.MEMBER, Role.ALUMNI, Role.WHEEL].includes(role)) {
       throw new BadRequestException('不允许授予该角色');
     }
-    const row = await this.usersRepository.findById(id);
+    const row = await this.usersRepository.findByIdentifier(identifier);
     if (!row) {
       throw new NotFoundException('用户不存在');
     }
     if (row.role === Role.ADMIN) {
       throw new ForbiddenException('不可修改管理员账号');
     }
-    const updated = await this.usersRepository.updateRole(id, role, row.role);
+    const updated = await this.usersRepository.updateRole(row.id, role, row.role);
     if (!updated) {
       throw new ConflictException('用户角色已变化，请刷新后重试');
     }
     // 角色变更后强制重登（旧 token 内含旧角色）
-    await this.refreshStore.revokeAll(id);
-    await this.notificationsService.notifyUser(id, {
+    await this.refreshStore.revokeAll(row.id);
+    await this.notificationsService.notifyUser(row.id, {
       type: 'ROLE',
       title: '角色变更',
       body: `你的角色已从 ${row.role} 变更为 ${role}`,
@@ -355,27 +363,27 @@ export class UsersService {
       actor,
       action: 'user.role.change',
       targetType: 'USER',
-      targetId: id,
+      targetId: row.id,
       detail: { from: row.role, to: role },
     });
     return this.toAdminView(updated);
   }
 
-  async promoteToAlumni(id: string, actor: CurrentAuthUser): Promise<AdminUserView> {
+  async promoteToAlumni(identifier: string, actor: CurrentAuthUser): Promise<AdminUserView> {
     requireRole(actor, Role.WHEEL, Role.ADMIN);
-    const row = await this.usersRepository.findById(id);
+    const row = await this.usersRepository.findByIdentifier(identifier);
     if (!row) {
       throw new NotFoundException('用户不存在');
     }
     if (row.role !== Role.MEMBER) {
       throw new ForbiddenException('仅学习成员可提前提拔');
     }
-    const updated = await this.usersRepository.updateRole(id, Role.ALUMNI, Role.MEMBER);
+    const updated = await this.usersRepository.updateRole(row.id, Role.ALUMNI, Role.MEMBER);
     if (!updated) {
       throw new ConflictException('用户角色已变化，请刷新后重试');
     }
-    await this.refreshStore.revokeAll(id);
-    await this.notificationsService.notifyUser(id, {
+    await this.refreshStore.revokeAll(row.id);
+    await this.notificationsService.notifyUser(row.id, {
       type: 'ROLE',
       title: '角色变更',
       body: '你的角色已从 MEMBER 变更为 ALUMNI',
@@ -384,31 +392,31 @@ export class UsersService {
       actor,
       action: 'user.promote',
       targetType: 'USER',
-      targetId: id,
+      targetId: row.id,
       detail: { from: 'MEMBER', to: 'ALUMNI' },
     });
     return this.toAdminView(updated);
   }
 
-  async removeByAdmin(id: string, actor: CurrentAuthUser): Promise<void> {
+  async removeByAdmin(identifier: string, actor: CurrentAuthUser): Promise<void> {
     requireRole(actor, Role.WHEEL, Role.ADMIN);
-    const row = await this.usersRepository.findById(id);
+    const row = await this.usersRepository.findByIdentifier(identifier);
     if (!row) {
       throw new NotFoundException('用户不存在');
     }
     if (row.role !== Role.MEMBER && row.role !== Role.VISITOR) {
       throw new ForbiddenException('仅可剔除学习成员或临时访客');
     }
-    await this.refreshStore.revokeAll(id);
+    await this.refreshStore.revokeAll(row.id);
     // 级联删除其 issues 前显式清理对应 taggings（无多态 FK）
-    await this.tagsService.cleanupIssuesOfAuthor(id);
-    const deleted = await this.usersRepository.deleteById(id);
+    await this.tagsService.cleanupIssuesOfAuthor(row.id);
+    const deleted = await this.usersRepository.deleteById(row.id);
     if (!deleted) throw new ConflictException('用户角色已变化，请刷新后重试');
     await this.auditLogService.record({
       actor,
       action: 'user.remove',
       targetType: 'USER',
-      targetId: id,
+      targetId: row.id,
       detail: { role: row.role },
     });
   }

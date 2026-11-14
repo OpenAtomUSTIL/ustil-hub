@@ -47,6 +47,7 @@ describe('ArticlesService', () => {
   };
   const usersService = {
     getPublicByIds: jest.fn(),
+    resolveRowByIdentifier: jest.fn(),
   };
   const tagsService = {
     normalizeTags: jest.fn((tags?: string[]) => tags),
@@ -139,6 +140,8 @@ describe('ArticlesService', () => {
   it('列表按 authorId 与 tag 过滤', async () => {
     articlesRepository.list.mockResolvedValue({ rows: [row()], total: 1 });
     tagsService.findTargetIds.mockResolvedValue(['01890a5d-ac96-7000-8000-0000000000a1']);
+    // 解析式寻址（v6.0）：authorId 先解析成 userId 再过滤
+    usersService.resolveRowByIdentifier.mockResolvedValue({ id: '01890a5d-ac96-7000-8000-000000000001' });
 
     await service.list({
       page: 1,
@@ -147,6 +150,7 @@ describe('ArticlesService', () => {
       tag: 'tag-a',
     });
 
+    expect(usersService.resolveRowByIdentifier).toHaveBeenCalledWith('01890a5d-ac96-7000-8000-000000000001');
     expect(tagsService.findTargetIds).toHaveBeenCalledWith('ARTICLE', 'tag-a');
     expect(articlesRepository.list).toHaveBeenCalledWith(1, 20, {
       keyword: undefined,
@@ -154,6 +158,15 @@ describe('ArticlesService', () => {
       tagTargetIds: ['01890a5d-ac96-7000-8000-0000000000a1'],
       status: 'PUBLISHED',
     });
+  });
+
+  it('列表 authorId 解析不到：返回空列表（过滤语义不报错）', async () => {
+    usersService.resolveRowByIdentifier.mockResolvedValue(null);
+
+    const result = await service.list({ page: 1, pageSize: 20, authorId: 'ghost@example.com' });
+
+    expect(result).toEqual({ items: [], total: 0, page: 1, pageSize: 20 });
+    expect(articlesRepository.list).not.toHaveBeenCalled();
   });
 
   it('公开列表只查 PUBLISHED', async () => {

@@ -20,6 +20,7 @@ import {
 } from '../../db/redis';
 import { UserStatus } from '../../db/schema';
 import { InviteCodesService } from '../admin/invite-codes.service';
+import { CaptchaService } from '../captcha/captcha.service';
 import { LoginLogsService } from '../audit/login-logs.service';
 import { UsersService, normalizeIdentifier } from '../users/users.service';
 import { AuthUser, UserPublic, UserSelf } from '../users/users.views';
@@ -49,6 +50,7 @@ export class AuthService {
     private readonly usersService: UsersService,
     private readonly inviteCodesService: InviteCodesService,
     private readonly loginLogsService: LoginLogsService,
+    private readonly captchaService: CaptchaService,
     private readonly jwtService: JwtService,
     @Inject(REDIS_CLIENT) private readonly redis: RedisClient,
     @Inject(REFRESH_TOKEN_STORE) private readonly refreshStore: RefreshTokenStore,
@@ -116,6 +118,7 @@ export class AuthService {
     if (attempts > 10) {
       throw new HttpException('注册尝试过于频繁，请稍后再试', HttpStatus.TOO_MANY_REQUESTS);
     }
+    await this.captchaService.validate(dto.captchaId, dto.captchaCode);
     const identifier = normalizeIdentifier(dto.identifier);
     const isEmailIdentifier = identifier.includes('@');
     const passwordHash = await hashPassword(dto.password);
@@ -147,6 +150,7 @@ export class AuthService {
     userId: string,
     dto: RedeemInviteCodeDto,
   ): Promise<{ user: UserSelf; tokens: AuthTokens }> {
+    await this.captchaService.validate(dto.captchaId, dto.captchaCode);
     const authUser = await this.usersService.getAuthUser(userId);
     if (!authUser) {
       throw new UnauthorizedException('登录已过期，请重新登录');
@@ -188,6 +192,7 @@ export class AuthService {
       });
       throw new HttpException('登录尝试过于频繁，请稍后再试', HttpStatus.TOO_MANY_REQUESTS);
     }
+    await this.captchaService.validate(dto.captchaId, dto.captchaCode);
 
     const record = await this.usersService.findByIdentifier(identifier);
     const passwordOk =
@@ -308,6 +313,7 @@ export class AuthService {
   }
 
   async changePassword(userId: string, dto: ChangePasswordDto): Promise<void> {
+    await this.captchaService.validate(dto.captchaId, dto.captchaCode);
     const record = await this.usersService.getAuthRecordById(userId);
     if (!record) {
       throw new NotFoundException('用户不存在');

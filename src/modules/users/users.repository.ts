@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { isEmail, isMobilePhone } from 'class-validator';
 import { and, desc, eq, gte, ilike, inArray, isNull, like, lt, ne, or, sql } from 'drizzle-orm';
 import { db, Database, type DatabaseTransaction } from '../../db';
 import {
@@ -116,6 +117,22 @@ export class UsersRepository {
     return isUuid(value) ? this.findById(value) : this.findByUsername(value);
   }
 
+  /**
+   * 解析式寻址（v6.0）：uuid → username（含历史 handle）→ email → phone，顺序即优先级。
+   * email 形状与 username 不撞形（USERNAME_RE 不含 @）可直达；纯数字可能与 username 撞形，username 优先。
+   * 未命中返回 null，语义由调用方决定（过滤类→空列表，路径参数类→404）。
+   */
+  async findByIdentifier(value: string): Promise<UserRow | null> {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    if (isUuid(trimmed)) return this.findById(trimmed);
+    if (isEmail(trimmed)) return this.findByEmailOrPhone(trimmed.toLowerCase());
+    const byUsername = await this.findByUsername(trimmed);
+    if (byUsername) return byUsername;
+    if (isMobilePhone(trimmed, 'zh-CN')) return this.findByEmailOrPhone(trimmed);
+    return null;
+  }
+
   /** 占用检查含历史 handle（旧 handle 不可被他人抢占） */
   async usernameExists(username: string, connection: Database | DatabaseTransaction = db): Promise<boolean> {
     const rows = await connection
@@ -228,6 +245,7 @@ export class UsersRepository {
       conditions.push(
         or(
           ilike(users.nickname, pattern),
+          ilike(users.username, pattern),
           ilike(users.email, pattern),
           ilike(users.phone, pattern),
         ),

@@ -1,10 +1,12 @@
 import { Transform } from 'class-transformer';
-import { IsIn, IsOptional, IsUUID } from 'class-validator';
+import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import { PaginationQueryDto } from '../../../common/dto/pagination-query.dto';
 
 export class RequestLogsQueryDto extends PaginationQueryDto {
+  // 解析式寻址（v6.0）：uuid / 用户名 / 邮箱 / 手机号，服务端解析后过滤
   @IsOptional()
-  @IsUUID(undefined, { message: 'userId 必须是 uuid' })
+  @IsString({ message: 'userId 必须是字符串' })
+  @MaxLength(255, { message: 'userId 过长' })
   userId?: string;
 
   @IsOptional()

@@ -109,16 +109,25 @@ export class ArticlesService {
   }
 
   async list(query: ArticlesQueryDto, user?: CurrentAuthUser): Promise<Page<ArticleListItem>> {
+    // 解析式寻址（v6.0）：authorId 支持 uuid / 用户名 / 邮箱 / 手机号；未命中→空列表（过滤语义）
+    let authorId = query.authorId;
+    if (authorId) {
+      const authorRow = await this.usersService.resolveRowByIdentifier(authorId);
+      if (!authorRow) {
+        return { items: [], total: 0, page: query.page, pageSize: query.pageSize };
+      }
+      authorId = authorRow.id;
+    }
     const tagTargetIds = query.tag
       ? await this.tagsService.findTargetIds(TagTargetType.ARTICLE, query.tag)
       : undefined;
     // 只有作者本人和审核人员可查询作者的未公开文章。
-    const canViewUnpublished = query.authorId && user &&
-      (query.authorId === user.id || this.isStaff(user));
+    const canViewUnpublished = authorId && user &&
+      (authorId === user.id || this.isStaff(user));
     const statusFilter = canViewUnpublished ? undefined : 'PUBLISHED';
     const { rows, total } = await this.articlesRepository.list(query.page, query.pageSize, {
       keyword: query.keyword,
-      authorId: query.authorId,
+      authorId,
       tagTargetIds,
       status: statusFilter,
     });

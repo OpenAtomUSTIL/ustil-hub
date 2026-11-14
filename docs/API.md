@@ -27,7 +27,7 @@
 - **错误码语义**：
   | 状态码 | 含义 |
   |---|---|
-  | 400 | 参数校验失败 / 文件不合规 / 当前密码错误 |
+  | 400 | 参数校验失败 / 文件不合规 / 当前密码错误 / 两次输入的密码不一致 / 密码复杂度不足 / 验证码错误或已失效 |
   | 401 | 未登录或登录已过期 |
   | 403 | 已登录但无权限 / 被封禁 / 超出提交时间 / `VISITOR` 访问作业 |
   | 404 | 资源不存在或不可见 |
@@ -42,7 +42,8 @@
 - **标题与昵称**：创建、更新时去除首尾空白后校验；纯空白返回 400，标题最长 200 字符、昵称最长 50 字符。
 - **slug 寻址（去 id 化）**：文章 / 作业 / 公告 / 资源 / Issue 创建时由标题生成唯一 slug（URL 不暴露裸 id）。
   **读接口**（详情类 `GET .../:id`）的 `:id` 可传 **uuid 或 slug**（uuid 优先匹配）；**写接口**（编辑 / 删除 / 审核 / 状态变更 / 回复 / 提交）仅接受 uuid，传 slug 返回 400。
-  用户接口 `:id` 可传 **uuid 或 username**（`POST :id/ban`、`POST :id/unban` 除外，仅 uuid）。
+  用户**读接口**（2.8 / 2.9 等）`:id` 可传 **uuid 或 username**；用户**管理类路径参数**（2.6 封禁 / 2.7 解封 / 11.2 改角色 / 11.3 提前提拔 / 11.4 剔除学员）支持 **uuid / username / email / phone** 四种标识（解析式寻址，uuid 优先：uuid → username（含历史 handle）→ email → phone），解析不到返回 `404`「用户不存在」。
+  **查询过滤参数**（请求日志 `userId`、操作审计 `actorId`、文章 `authorId`、讨论 `authorId`、资源 `creatorId`）同样支持 uuid / 用户名 / 邮箱 / 手机号，解析不到返回**空列表**（不报错）。
 - **标签**：`tags` 可省略，更新时 `[]` 表示清空；显式 `null` 返回 400。
 - **公告布尔值**：`pinned`、`notify` 可省略，必须是布尔值；`null` 或字符串 `"false"` 返回 400。
 - **作业输入时间**：`startAt`、`deadlineAt` 必须是带 `Z` 的 ISO 8601 UTC 字符串（秒必填，毫秒可选、最多 3 位）；数字时间戳、无时区时间及无效日历日期返回 400。
@@ -120,28 +121,33 @@ TagView = { id: string; name: string; count: number }
   ```json
   {
     "identifier": "user@example.com 或 13800138000",  // 邮箱或手机号，二选一
-    "password": "8~128 位",
+    "password": "8~128 位，大写/小写/数字/符号中至少两类",
+    "passwordConfirm": "确认密码，必填，须与 password 一致",
     "nickname": "昵称，≤50 字符",
-    "inviteCode": "可选；有效则注册为 MEMBER 并核销名额"
+    "inviteCode": "可选；有效则注册为 MEMBER 并核销名额",
+    "captchaId": "图形验证码 id（见 1.8）",
+    "captchaCode": "图形验证码答案"
   }
   ```
+- 密码规则：8~128 位，且 大写/小写/数字/符号 四类中至少两类（错误文案「密码需包含大写字母、小写字母、数字、符号中的至少两类」）；`passwordConfirm` 与 `password` 不一致 → `400`「两次输入的密码不一致」
 - 成功：`201`，返回 `UserSelf`，写入 `access_token` / `refresh_token` Cookie
   - 有有效邀请码 → `MEMBER`；无码 → `VISITOR`（7 天内可持码经 1.2 转正）
-- 失败：`409` 邮箱/手机号已注册；`409` 邀请码无效/已作废/已过期/已被用尽；`400` 参数非法
+- 失败：`409` 邮箱/手机号已注册；`409` 邀请码无效/已作废/已过期/已被用尽；`400` 参数非法 / 两次输入的密码不一致 / 密码复杂度不足 / 验证码错误或已失效
 
 ### 1.2 持码转正 `POST /api/v1/auth/invite-code`
 
 - 权限：🔐 登录（**仅 `VISITOR`**，其他角色 403）
-- 请求体：`{ "inviteCode": "邀请码" }`
+- 请求体：`{ "inviteCode": "邀请码", "captchaId": "图形验证码 id（见 1.8）", "captchaCode": "图形验证码答案" }`
 - 成功：`201`，返回 `UserSelf`（角色变为 `MEMBER`），并**换发**新双 token Cookie
-- 失败：`409` 邀请码无效/作废/过期/用尽；`403` 非 `VISITOR`
+- 失败：`409` 邀请码无效/作废/过期/用尽；`403` 非 `VISITOR`；`400` 验证码错误或已失效
 
 ### 1.3 登录 `POST /api/v1/auth/login`
 
 - 权限：🌐 公开
-- 请求体：`{ "identifier": "邮箱或手机号", "password": "8~128 位" }`
+- 请求体：`{ "identifier": "邮箱或手机号", "password": "8~128 位", "captchaId": "图形验证码 id（见 1.8）", "captchaCode": "图形验证码答案" }`
 - 成功：`201`，返回 `UserSelf`，写入双 token Cookie
 - 失败：
+  - `400` 验证码错误或已失效
   - `401` 统一提示"账号或密码错误"（不区分用户不存在/密码错误）
   - `429` 同一账号 + IP 15 分钟内失败 5 次，锁定 15 分钟
   - `403` 账号被封禁
@@ -164,20 +170,37 @@ TagView = { id: string; name: string; count: number }
 ### 1.6 修改密码 `POST /api/v1/auth/password`
 
 - 权限：🔐 登录
-- 请求体：`{ "currentPassword": "当前密码", "newPassword": "新密码（8~128 位）" }`
+- 请求体：`{ "currentPassword": "当前密码", "newPassword": "新密码（8~128 位，大写/小写/数字/符号中至少两类）", "captchaId": "图形验证码 id（见 1.8）", "captchaCode": "图形验证码答案" }`
 - 成功：`204`；清除该用户全部 refresh 并递增 `sessionVersion`（其它端需重新登录）
-- 失败：`400` 当前密码错误
+- 失败：`400` 当前密码错误 / 新密码复杂度不足 / 验证码错误或已失效
 
 ### 1.7 获取当前用户 `GET /api/v1/auth/me`
 
 - 权限：🔐 登录
 - 成功：`200`，返回 `UserSelf`
 
+### 1.8 获取图形验证码 `GET /api/v1/auth/captcha`
+
+- 权限：🌐 公开
+- 说明：自绘 SVG（无第三方服务）；答案以 sha256 哈希存 Redis（**不落明文**），TTL 5 分钟
+- 成功：`200`
+  ```json
+  {
+    "captchaId": "uuid",
+    "image": "data:image/svg+xml;base64,..."   // 可直接作 <img src>
+  }
+  ```
+- 消费规则：`captchaId` + `captchaCode` 为注册 / 登录 / 改密 / 换绑 / 持码转正的**必填**字段
+  - **一次性消费**：校验通过即作废，同一 `captchaId` 复用直接校验失败
+  - 单 `captchaId` 校验失败 **3 次**作废
+  - 校验失败统一 `400`，message 恒为「验证码错误或已失效」（不区分过期 / 错误 / 已消费）
+- 与既有 IP / 失败次数限流**叠加**而非替代
+
 ---
 
 ## 2. 用户 `/api/v1/users`
 
-> `:id` 路径参数均可传 **uuid 或 username**（uuid 优先匹配）；仅 2.6 / 2.7 封禁类接口限定 uuid。
+> `:id` 路径参数均可传 **uuid 或 username**（uuid 优先匹配）；2.6 封禁 / 2.7 解封为用户管理类路径参数，支持 **uuid / username / email / phone** 四种标识（解析式寻址，uuid 优先），解析不到返回 `404`「用户不存在」。
 
 ### 2.1 修改本人资料 `PATCH /api/v1/users/me`
 
@@ -190,11 +213,17 @@ TagView = { id: string; name: string; count: number }
 - 权限：🔐 登录（仅本人；`ADMIN` 账号初始化后不可换绑，403）
 - 请求体：
   ```json
-  { "type": "email | phone", "value": "新邮箱或手机号", "password": "当前密码" }
+  {
+    "type": "email | phone",
+    "value": "新邮箱或手机号",
+    "password": "当前密码",
+    "captchaId": "图形验证码 id（见 1.8）",
+    "captchaCode": "图形验证码答案"
+  }
   ```
 - 说明：一个账号只绑定一个邮箱**或**一个手机号；换绑时清空另一种标识
 - 成功：`200`，返回 `UserSelf`
-- 失败：`400` 当前密码错误/格式非法；`409` 已被其它账号绑定
+- 失败：`400` 当前密码错误/格式非法/验证码错误或已失效；`409` 已被其它账号绑定
 
 ### 2.3 修改主页用户名 `PUT /api/v1/users/me/username`
 
@@ -228,13 +257,15 @@ TagView = { id: string; name: string; count: number }
 
 ### 2.6 封禁账号 `POST /api/v1/users/:id/ban`
 
-- 权限：🛡️ 仅 `ADMIN`（`ADMIN` 账号不可被封禁，403；仅 uuid 寻址）
+- 权限：🛡️ 仅 `ADMIN`（`ADMIN` 账号不可被封禁，403）
+- 寻址：`id` 支持 uuid / username / email / phone（uuid 优先），解析不到 `404`「用户不存在」
 - 成功：`201`，返回 `{ "id": string, "status": "BANNED" }`
 - 说明：封禁立即吊销该用户全部 refresh 并递增 `sessionVersion`；之后请求直接 403
 
 ### 2.7 解封账号 `POST /api/v1/users/:id/unban`
 
-- 权限：🛡️ 仅 `ADMIN`（仅 uuid 寻址）
+- 权限：🛡️ 仅 `ADMIN`
+- 寻址：`id` 支持 uuid / username / email / phone（uuid 优先），解析不到 `404`「用户不存在」
 - 成功：`201`，返回 `{ "id": string, "status": "ACTIVE" }`
 
 ### 2.8 查看他人公开资料 `GET /api/v1/users/:id`
@@ -350,7 +381,7 @@ TagView = { id: string; name: string; count: number }
 ### 3.1 文章列表 `GET /api/v1/articles`
 
 - 权限：🔐 登录
-- 查询参数：`page`、`pageSize`、`keyword`（≤100）、`authorId`（uuid）、`tag`（≤30）
+- 查询参数：`page`、`pageSize`、`keyword`（≤100）、`authorId`（uuid / 用户名 / 邮箱 / 手机号，解析不到返回空列表）、`tag`（≤30）
 - 成功：`200`，返回 `Page<ArticleListItem>`
   ```ts
   ArticleListItem = {
@@ -542,7 +573,7 @@ TagView = { id: string; name: string; count: number }
 ### 5.1 Issue 列表 `GET /api/v1/issues`
 
 - 权限：🔐 登录
-- 查询参数：`page`、`pageSize`、`status`（`OPEN | ANSWERED | ON_HOLD`）、`keyword`（≤100）、`tag`（≤30）
+- 查询参数：`page`、`pageSize`、`status`（`OPEN | ANSWERED | ON_HOLD`）、`keyword`（≤100）、`tag`（≤30）、`authorId`（uuid / 用户名 / 邮箱 / 手机号，解析不到返回空列表）
 - 成功：`200`，返回 `Page<IssueListItem>`
   ```ts
   IssueListItem = {
@@ -637,7 +668,7 @@ TagView = { id: string; name: string; count: number }
 ### 7.1 资源列表 `GET /api/v1/resources`
 
 - 权限：🔐 登录
-- 查询参数：`page`、`pageSize`、`category`、`keyword`（≤100）、`tag`（≤30）
+- 查询参数：`page`、`pageSize`、`category`、`keyword`（≤100）、`tag`（≤30）、`creatorId`（uuid / 用户名 / 邮箱 / 手机号，解析不到返回空列表）
 - 成功：`200`，返回 `Page<ResourceItem>`
   ```ts
   ResourceItem = {
@@ -752,7 +783,7 @@ TagView = { id: string; name: string; count: number }
 ### 11.1 用户列表 `GET /api/v1/admin/users`
 
 - 权限：🛡️ `WHEEL`、`ADMIN`
-- 查询参数：`page`、`pageSize`、`keyword`（≤100）、`role`、`status`（`ACTIVE | BANNED`）
+- 查询参数：`page`、`pageSize`、`keyword`（≤100，模糊匹配昵称/用户名/邮箱/手机号）、`role`、`status`（`ACTIVE | BANNED`）
 - 成功：`200`，返回 `AdminUserPage`（联系方式脱敏）
   ```ts
   AdminUserView = {
@@ -765,6 +796,7 @@ TagView = { id: string; name: string; count: number }
 ### 11.2 修改用户角色 `PATCH /api/v1/admin/users/:id/role`
 
 - 权限：🛡️ **仅 `ADMIN`**（`WHEEL` 403）
+- 寻址：`id` 支持 uuid / username / email / phone（uuid 优先），解析不到 `404`「用户不存在」
 - 请求体：`{ "role": "VISITOR | MEMBER | ALUMNI | WHEEL" }`（**不能授予/变更为 `ADMIN`**，ADMIN 仅由种子脚本创建）
 - 成功：`200`，返回 `AdminUserView`
 - 失败：`403` 目标是 `ADMIN` 账号（不可修改）；操作同时递增目标 `sessionVersion` 强制重新登录
@@ -772,12 +804,14 @@ TagView = { id: string; name: string; count: number }
 ### 11.3 提前提拔 `POST /api/v1/admin/users/:id/promote`
 
 - 权限：🛡️ `WHEEL`、`ADMIN`
+- 寻址：`id` 支持 uuid / username / email / phone（uuid 优先），解析不到 `404`「用户不存在」
 - 说明：`MEMBER` → `ALUMNI`（仅 `MEMBER` 可提拔，其他角色 403）
 - 成功：`201`，返回 `AdminUserView`
 
 ### 11.4 剔除学员 `DELETE /api/v1/admin/users/:id`
 
 - 权限：🛡️ `WHEEL`、`ADMIN`
+- 寻址：`id` 支持 uuid / username / email / phone（uuid 优先），解析不到 `404`「用户不存在」
 - 说明：硬删账号，级联删除其 issues/replies；**仅 `MEMBER` / `VISITOR` 可被剔除**，`ALUMNI` 及以上不可
 - 成功：`204`
 - 失败：`403` 目标角色不可剔除
@@ -919,7 +953,7 @@ TagView = { id: string; name: string; count: number }
 ### 11.16 操作审计日志 `GET /api/v1/admin/audit-logs`
 
 - 权限：🛡️ `WHEEL`、`ADMIN`
-- 查询参数：`page`、`pageSize`、`action`（≤100）、`targetType`（≤50）、`actorId`（uuid）
+- 查询参数：`page`、`pageSize`、`action`（≤100）、`targetType`（≤50）、`actorId`（uuid / 用户名 / 邮箱 / 手机号，解析不到返回空列表）
 - 成功：`200`，返回 `Page<AuditLogItem>`
   ```ts
   AuditLogItem = {
@@ -951,7 +985,7 @@ TagView = { id: string; name: string; count: number }
 
 - 权限：🛡️ `WHEEL`、`ADMIN`
 - 说明：记录范围为**全部 `/api/v1/**` 请求（含 GET）**，响应完成后异步写库、失败静默
-- 查询参数：`page`、`pageSize`、`userId`（uuid）、`method`（`GET | POST | PUT | PATCH | DELETE | HEAD | OPTIONS`）
+- 查询参数：`page`、`pageSize`、`userId`（uuid / 用户名 / 邮箱 / 手机号，解析不到返回空列表）、`method`（`GET | POST | PUT | PATCH | DELETE | HEAD | OPTIONS`）
 - 成功：`200`，返回 `Page<RequestLogItem>`
   ```ts
   RequestLogItem = {
@@ -1019,7 +1053,7 @@ TagView = { id: string; name: string; count: number }
 - 被封禁账号（`status = 'BANNED'`）在 `JwtAuthGuard` 直接 403。
 - `ADMIN` 账号不可被改角色 / 删除 / 封禁（service 层 403）。
 - `VISITOR` 全面禁入作业模块（列表/详情/提交/附件/提交记录均 403）；个人主页 / 关注 / 活跃等社交接口对 `VISITOR` 仅开放本人数据。
-- **slug 寻址**：详情类读接口 `:id` 可传 uuid 或 slug；写接口（编辑/删除/审核/回复/提交等）仅 uuid。用户接口 `:id` 可传 uuid 或 username（封禁/解封仅 uuid）。
+- **slug 寻址**：详情类读接口 `:id` 可传 uuid 或 slug；写接口（编辑/删除/审核/回复/提交等）仅 uuid。用户接口 `:id`：读接口可传 uuid 或 username；封禁/解封/改角色/提前提拔/剔除等管理操作支持 uuid / username / email / phone（uuid 优先，解析不到 `404`「用户不存在」）。
 - **软删除语义**：文章/公告/资源/评论（讨论回复）的 `DELETE` 一律为软删（置 `deleted_at`）进回收站，
   可经 `POST /admin/trash/:type/:id/restore` 还原；软删期间列表/详情/搜索/tag 过滤/tag 计数均排除软删行
   （详情 404），`taggings` 保留、恢复后完整可见；审计 `detail` 保留删除前快照（标题/正文前 200 字）。

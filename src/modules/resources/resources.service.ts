@@ -55,13 +55,22 @@ export class ResourcesService {
   }
 
   async list(query: ResourcesQueryDto): Promise<Page<ResourceItem>> {
+    // 解析式寻址（v6.0）：creatorId 支持 uuid / 用户名 / 邮箱 / 手机号；未命中→空列表（过滤语义）
+    let creatorId = query.creatorId;
+    if (creatorId) {
+      const creatorRow = await this.usersService.resolveRowByIdentifier(creatorId);
+      if (!creatorRow) {
+        return { items: [], total: 0, page: query.page, pageSize: query.pageSize };
+      }
+      creatorId = creatorRow.id;
+    }
     const tagTargetIds = query.tag
       ? await this.tagsService.findTargetIds(TagTargetType.RESOURCE, query.tag)
       : undefined;
     const { rows, total } = await this.resourcesRepository.list(query.page, query.pageSize, {
       category: query.category,
       keyword: query.keyword,
-      creatorId: query.creatorId,
+      creatorId,
       tagTargetIds,
     });
     return {

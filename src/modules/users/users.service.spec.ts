@@ -9,6 +9,7 @@ import { Role } from '../../common/decorators/roles.decorator';
 import { REFRESH_TOKEN_STORE } from '../../db/redis';
 import { UserStatus } from '../../db/schema';
 import { AuditLogService } from '../audit/audit-log.service';
+import { CaptchaService } from '../captcha/captcha.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { TagsService } from '../tags/tags.service';
 import { UploadsService } from '../storage/uploads.service';
@@ -49,6 +50,7 @@ describe('UsersService', () => {
     findById: jest.fn(),
     findByUsername: jest.fn(),
     findByIdOrUsername: jest.fn(),
+    findByIdentifier: jest.fn(),
     usernameExists: jest.fn(),
     updateUsername: jest.fn(),
     insertFollow: jest.fn(),
@@ -101,11 +103,20 @@ describe('UsersService', () => {
     cleanupIssuesOfAuthor: jest.fn(),
     cleanup: jest.fn(),
   };
+  // v6.0：changeIdentifier 起手先过图形验证码，单测直接打桩放行
+  const captchaService = {
+    validate: jest.fn(),
+    create: jest.fn(),
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
     usersRepository.withUsernameLock.mockImplementation((operation) => operation(transaction));
     usersRepository.findByIdOrUsername.mockImplementation((v: string) =>
+      usersRepository.findById(v),
+    );
+    // 解析式寻址（v6.0）：管理操作路径参数走 findByIdentifier，委托 findById 保持既有用例语义
+    usersRepository.findByIdentifier.mockImplementation((v: string) =>
       usersRepository.findById(v),
     );
     usersRepository.getFollowCounts.mockResolvedValue({ followers: 0, following: 0 });
@@ -119,6 +130,7 @@ describe('UsersService', () => {
         { provide: NotificationsService, useValue: notificationsService },
         { provide: AuditLogService, useValue: auditLogService },
         { provide: TagsService, useValue: tagsService },
+        { provide: CaptchaService, useValue: captchaService },
         { provide: REFRESH_TOKEN_STORE, useValue: refreshStore },
       ],
     }).compile();
@@ -148,6 +160,8 @@ describe('UsersService', () => {
 
     await expect(
       service.changeIdentifier('01890a5d-ac96-7000-8000-000000000001', {
+        captchaId: 'captcha-1',
+        captchaCode: 'ABCDE',
         type: 'email',
         value: 'new@example.com',
         password: 'wrong-password',
@@ -251,6 +265,8 @@ describe('UsersService', () => {
 
     await expect(
       service.changeIdentifier('01890a5d-ac96-7000-8000-000000000001', {
+        captchaId: 'captcha-1',
+        captchaCode: 'ABCDE',
         type: 'email',
         value: 'new@example.com',
         password: 'password123',

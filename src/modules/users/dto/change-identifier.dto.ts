@@ -1,6 +1,7 @@
 import { IsIn, IsNotEmpty, IsString, MaxLength } from 'class-validator';
+import { CaptchaFields } from '../../../common/dto/captcha-fields';
 
-export class ChangeIdentifierDto {
+export class ChangeIdentifierDto extends CaptchaFields {
   @IsIn(['email', 'phone'], { message: 'type 必须是 email 或 phone' })
   type!: 'email' | 'phone';
 

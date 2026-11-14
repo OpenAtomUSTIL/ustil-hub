@@ -61,6 +61,7 @@ describe('IssuesService', () => {
   const usersService = {
     getPublicByIds: jest.fn(),
     searchIdsByKeyword: jest.fn(),
+    resolveRowByIdentifier: jest.fn(),
   };
   const tagsService = {
     normalizeTags: jest.fn((tags?: string[]) => tags),
@@ -358,5 +359,29 @@ describe('IssuesService', () => {
       content: '回复内容',
       deletedAt: now.toISOString(),
     });
+  });
+
+  it('列表按 authorId 过滤：解析式寻址命中后按 userId 过滤', async () => {
+    usersService.resolveRowByIdentifier.mockResolvedValue({ id: '01890a5d-ac96-7000-8000-000000000002' });
+    issuesRepository.list.mockResolvedValue({ rows: [], total: 0 });
+
+    await service.list({ page: 1, pageSize: 20, authorId: 'a@example.com' });
+
+    expect(usersService.resolveRowByIdentifier).toHaveBeenCalledWith('a@example.com');
+    expect(issuesRepository.list).toHaveBeenCalledWith(1, 20, {
+      status: undefined,
+      keyword: undefined,
+      authorId: '01890a5d-ac96-7000-8000-000000000002',
+      tagTargetIds: undefined,
+    });
+  });
+
+  it('列表 authorId 解析不到：返回空列表（过滤语义不报错）', async () => {
+    usersService.resolveRowByIdentifier.mockResolvedValue(null);
+
+    const result = await service.list({ page: 1, pageSize: 20, authorId: 'ghost@example.com' });
+
+    expect(result).toEqual({ items: [], total: 0, page: 1, pageSize: 20 });
+    expect(issuesRepository.list).not.toHaveBeenCalled();
   });
 });

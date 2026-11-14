@@ -7,6 +7,7 @@ import { REDIS_CLIENT, REFRESH_TOKEN_STORE } from '../../db/redis';
 import { UserStatus } from '../../db/schema';
 import { InviteCodesService } from '../admin/invite-codes.service';
 import { LoginLogsService } from '../audit/login-logs.service';
+import { CaptchaService } from '../captcha/captcha.service';
 import { UsersService } from '../users/users.service';
 import { UserSelf } from '../users/users.views';
 import { AuthService } from './auth.service';
@@ -51,6 +52,9 @@ describe('AuthService', () => {
   let service: AuthService;
   let jwtService: JwtService;
 
+  // 敏感操作 DTO 自 v6.0 起必带图形验证码字段（service 内 captchaService.validate 打桩放行）
+  const captchaFields = { captchaId: 'captcha-1', captchaCode: 'ABCDE' };
+
   const usersService = {
     createUser: jest.fn(),
     findByIdentifier: jest.fn(),
@@ -86,6 +90,10 @@ describe('AuthService', () => {
   const loginLogsService = {
     record: jest.fn(),
   };
+  const captchaService = {
+    validate: jest.fn(),
+    create: jest.fn(),
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -95,6 +103,7 @@ describe('AuthService', () => {
         { provide: UsersService, useValue: usersService },
         { provide: InviteCodesService, useValue: inviteCodesService },
         { provide: LoginLogsService, useValue: loginLogsService },
+        { provide: CaptchaService, useValue: captchaService },
         { provide: JwtService, useValue: new JwtService({ secret: 'unit-test-secret' }) },
         { provide: REDIS_CLIENT, useValue: redis },
         { provide: REFRESH_TOKEN_STORE, useValue: refreshStore },
@@ -110,8 +119,10 @@ describe('AuthService', () => {
     usersService.createUser.mockResolvedValue(selfFixture);
 
     const result = await service.register({
+      ...captchaFields,
       identifier: 'A@Example.com',
       password: 'password123',
+      passwordConfirm: 'password123',
       nickname: '测试用户',
     });
 
@@ -132,8 +143,10 @@ describe('AuthService', () => {
     usersService.createUser.mockResolvedValue({ ...selfFixture, role: Role.VISITOR });
 
     await service.register({
+      ...captchaFields,
       identifier: 'a@example.com',
       password: 'password123',
+      passwordConfirm: 'password123',
       nickname: '测试用户',
     });
 
@@ -148,8 +161,10 @@ describe('AuthService', () => {
     usersService.createUser.mockResolvedValue(selfFixture);
 
     await service.register({
+      ...captchaFields,
       identifier: 'a@example.com',
       password: 'password123',
+      passwordConfirm: 'password123',
       nickname: '测试用户',
       inviteCode: 'ABCD2345EF',
     });
@@ -166,8 +181,10 @@ describe('AuthService', () => {
 
     await expect(
       service.register({
+        ...captchaFields,
         identifier: 'a@example.com',
         password: 'password123',
+        passwordConfirm: 'password123',
         nickname: '测试用户',
         inviteCode: 'FULL2345CD',
       }),
@@ -181,8 +198,10 @@ describe('AuthService', () => {
 
     await expect(
       service.register({
+        ...captchaFields,
         identifier: 'a@example.com',
         password: 'password123',
+        passwordConfirm: 'password123',
         nickname: '测试用户',
         inviteCode: 'ABCD2345EF',
       }),
@@ -200,7 +219,7 @@ describe('AuthService', () => {
     inviteCodesService.consume.mockResolvedValue({ id: 'invite-1' });
     usersService.applyInviteCode.mockResolvedValue(selfFixture);
 
-    const result = await service.redeemInviteCode(selfFixture.id, { inviteCode: 'ABCD2345EF' });
+    const result = await service.redeemInviteCode(selfFixture.id, { ...captchaFields, inviteCode: 'ABCD2345EF' });
 
     expect(inviteCodesService.consume).toHaveBeenCalledWith('ABCD2345EF');
     expect(usersService.applyInviteCode).toHaveBeenCalledWith(selfFixture.id, 'invite-1');
@@ -217,7 +236,7 @@ describe('AuthService', () => {
     });
 
     await expect(
-      service.redeemInviteCode(selfFixture.id, { inviteCode: 'ABCD2345EF' }),
+      service.redeemInviteCode(selfFixture.id, { ...captchaFields, inviteCode: 'ABCD2345EF' }),
     ).rejects.toThrow(ForbiddenException);
     expect(inviteCodesService.consume).not.toHaveBeenCalled();
   });
@@ -232,7 +251,7 @@ describe('AuthService', () => {
     inviteCodesService.consume.mockRejectedValue(new ConflictException('邀请码已被用尽'));
 
     await expect(
-      service.redeemInviteCode(selfFixture.id, { inviteCode: 'FULL2345CD' }),
+      service.redeemInviteCode(selfFixture.id, { ...captchaFields, inviteCode: 'FULL2345CD' }),
     ).rejects.toThrow(ConflictException);
     expect(usersService.applyInviteCode).not.toHaveBeenCalled();
   });
@@ -255,10 +274,10 @@ describe('AuthService', () => {
     redis.expire.mockResolvedValue(1);
 
     await expect(
-      service.login({ identifier: 'a@example.com', password: 'wrong-password' }, '127.0.0.1'),
+      service.login({ ...captchaFields, identifier: 'a@example.com', password: 'wrong-password' }, '127.0.0.1'),
     ).rejects.toThrow('账号或密码错误');
     await expect(
-      service.login({ identifier: 'a@example.com', password: 'wrong-password' }, '127.0.0.1'),
+      service.login({ ...captchaFields, identifier: 'a@example.com', password: 'wrong-password' }, '127.0.0.1'),
     ).rejects.toThrow(UnauthorizedException);
   });
 
@@ -266,7 +285,7 @@ describe('AuthService', () => {
     redis.get.mockResolvedValue('5');
 
     await expect(
-      service.login({ identifier: 'a@example.com', password: 'whatever' }, '127.0.0.1'),
+      service.login({ ...captchaFields, identifier: 'a@example.com', password: 'whatever' }, '127.0.0.1'),
     ).rejects.toMatchObject({ status: HttpStatus.TOO_MANY_REQUESTS });
   });
 
@@ -332,6 +351,7 @@ describe('AuthService', () => {
 
     await expect(
       service.changePassword(selfFixture.id, {
+        ...captchaFields,
         currentPassword: 'wrong-password',
         newPassword: 'newpassword123',
       }),
@@ -355,7 +375,7 @@ describe('AuthService', () => {
     redis.get.mockResolvedValue('0');
 
     await service.login(
-      { identifier: 'a@example.com', password: 'password123' },
+      { ...captchaFields, identifier: 'a@example.com', password: 'password123' },
       '127.0.0.1',
       'jest-agent',
     );
@@ -387,7 +407,7 @@ describe('AuthService', () => {
     redis.incr.mockResolvedValue(1);
 
     await expect(
-      service.login({ identifier: 'a@example.com', password: 'wrong-password' }, '127.0.0.1'),
+      service.login({ ...captchaFields, identifier: 'a@example.com', password: 'wrong-password' }, '127.0.0.1'),
     ).rejects.toThrow(UnauthorizedException);
     expect(loginLogsService.record).toHaveBeenCalledWith(
       expect.objectContaining({ userId: null, success: false, failReason: '密码错误' }),
@@ -395,7 +415,7 @@ describe('AuthService', () => {
 
     usersService.findByIdentifier.mockResolvedValue(null);
     await expect(
-      service.login({ identifier: 'nobody@example.com', password: 'whatever' }, '127.0.0.1'),
+      service.login({ ...captchaFields, identifier: 'nobody@example.com', password: 'whatever' }, '127.0.0.1'),
     ).rejects.toThrow(UnauthorizedException);
     expect(loginLogsService.record).toHaveBeenCalledWith(
       expect.objectContaining({ userId: null, success: false, failReason: '用户不存在' }),
@@ -406,7 +426,7 @@ describe('AuthService', () => {
     redis.get.mockResolvedValue('5');
 
     await expect(
-      service.login({ identifier: 'a@example.com', password: 'whatever' }, '127.0.0.1'),
+      service.login({ ...captchaFields, identifier: 'a@example.com', password: 'whatever' }, '127.0.0.1'),
     ).rejects.toMatchObject({ status: HttpStatus.TOO_MANY_REQUESTS });
     expect(loginLogsService.record).toHaveBeenCalledWith(
       expect.objectContaining({ success: false, failReason: '登录尝试过于频繁' }),

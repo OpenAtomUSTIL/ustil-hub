@@ -94,13 +94,22 @@ export class IssuesService {
   }
 
   async list(query: IssuesQueryDto): Promise<Page<IssueListItem>> {
+    // 解析式寻址（v6.0）：authorId 支持 uuid / 用户名 / 邮箱 / 手机号；未命中→空列表（过滤语义）
+    let authorId = query.authorId;
+    if (authorId) {
+      const authorRow = await this.usersService.resolveRowByIdentifier(authorId);
+      if (!authorRow) {
+        return { items: [], total: 0, page: query.page, pageSize: query.pageSize };
+      }
+      authorId = authorRow.id;
+    }
     const tagTargetIds = query.tag
       ? await this.tagsService.findTargetIds(TagTargetType.ISSUE, query.tag)
       : undefined;
     const { rows, total } = await this.issuesRepository.list(query.page, query.pageSize, {
       status: query.status,
       keyword: query.keyword,
-      authorId: query.authorId,
+      authorId,
       tagTargetIds,
     });
     const replyCounts = await this.issuesRepository.countReplies(rows.map((row) => row.id));

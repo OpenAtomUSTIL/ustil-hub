@@ -17,7 +17,6 @@ import { Public } from '../../common/decorators/public.decorator';
 import { Roles, Role } from '../../common/decorators/roles.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { fileUploadInterceptor } from '../../common/interceptors/file-upload.interceptor';
-import { uuidParamPipe } from '../../common/pipes/uuid-param.pipe';
 import { UploadedFileInput } from '../storage/uploads.service';
 import { renderBadgesSvg, statsToBadges, toShieldsSchema } from './users.badges';
 import { SnakeService } from './snake.service';
@@ -62,15 +61,16 @@ export class UsersController {
     return this.usersService.uploadAvatar(user.id, file);
   }
 
+  // 解析式寻址（v6.0）：:id 支持 uuid / 用户名 / 邮箱 / 手机号，service 层解析
   @Post(':id/ban')
   @Roles(Role.ADMIN)
-  ban(@Param('id', uuidParamPipe) id: string, @CurrentUser() user: CurrentAuthUser) {
+  ban(@Param('id') id: string, @CurrentUser() user: CurrentAuthUser) {
     return this.usersService.ban(id, user);
   }
 
   @Post(':id/unban')
   @Roles(Role.ADMIN)
-  unban(@Param('id', uuidParamPipe) id: string, @CurrentUser() user: CurrentAuthUser) {
+  unban(@Param('id') id: string, @CurrentUser() user: CurrentAuthUser) {
     return this.usersService.unban(id, user);
   }
 

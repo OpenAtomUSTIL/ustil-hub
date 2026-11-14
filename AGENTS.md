@@ -76,6 +76,8 @@ USTIL 官网/门户，本质是一个 **RBAC（基于角色的权限控制）系
 ### 4.5 标识与命名
 - 主键：`uuid`（v7），`MUST NOT` 用自增整数暴露给前端。
 - 数据库列：`snake_case`；JSON 字段：`camelCase`。由 Drizzle 映射层转换，`MUST NOT` 让前端迁就 `snake_case`。
+- 用户寻址（解析式，uuid 优先）：用户 `:id` 管理类路径参数（封禁/解封/改角色/提拔/剔除等）与查询过滤参数（`userId` / `actorId` / `authorId` / `creatorId` 等）支持 uuid / username（含历史 handle）/ email / phone（按 uuid → username → email → phone 顺序解析）；路径参数解析不到 → 404「用户不存在」，查询过滤参数解析不到 → 空列表。内容实体与用户资料页读接口维持「uuid 或 slug/username」不变。
+- 敏感操作验证码：注册 / 登录 / 改密 / 换绑 / 持码转正的请求体 `MUST` 额外携带 `captchaId` + `captchaCode`（取自 `GET /api/v1/auth/captcha`，一次性消费），校验失败统一 400「验证码错误或已失效」。
 
 ### 4.6 语言
 - 用户可见文案：中文。
@@ -225,6 +227,7 @@ controller → service → repository(db)
   parallelism: 1
   ```
 - 列名 `password_hash`，`MUST NOT` 任何地方出现明文密码、`MUST NOT` 日志打印密码或请求体。
+- 复杂度：8~128 位，且 大写/小写/数字/符号 四类字符中至少两类；仅新注册 `password` 与改密 `newPassword` 生效（登录与 `currentPassword` 不加复杂度，兼容存量密码）。
 
 ### 11.2 Token
 - 双 token，均放 **httpOnly cookie**（JS 不可读，防 XSS 窃取）：
@@ -247,6 +250,7 @@ controller → service → repository(db)
 - Redis 计数器：同一 `identifier`（邮箱/手机）+ IP 组合，15 分钟内失败 5 次 → 返回 429 并锁定 15 分钟。
 - 登录失败响应 `MUST` 统一为"账号或密码错误"，`MUST NOT` 区分"用户不存在"与"密码错误"（防账号枚举）。
 - 注册时邮箱/手机号唯一性冲突用 409 返回，这是少数允许明确告知的场景。
+- 敏感操作图形验证码：注册 / 登录 / 改密 / 换绑 / 持码转正 `MUST` 校验 `captchaId` + `captchaCode`（自绘 SVG，答案 sha256 存 Redis、TTL 5 分钟、一次性消费、单 captchaId 失败 3 次作废），校验失败统一 400「验证码错误或已失效」，与 IP 限流叠加而非替代。
 
 ### 11.4 账号绑定
 - 一个账号 `MUST` 只绑定**一个**邮箱或**一个**手机号（满足即可注册）。
@@ -291,10 +295,11 @@ interface StorageService {
 - `MUST NOT` 实现积分：答对不加分，只有状态流转。
 - 未解决 → 已解答时记录 `answeredBy` 与 `answeredAt`。
 
-## 15. Redis 职责（MVP 仅两项）
+## 15. Redis 职责（MVP 仅三项）
 
 1. 登录失败限流（§11.3）
 2. `refresh_token` 白名单 / 黑名单（§11.2）
+3. 图形验证码答案（sha256 哈希，不落明文——§16.1）：key `captcha:{captchaId}` / `captcha:attempts:{captchaId}`，TTL 5 分钟
 
 `MUST NOT` 在 MVP 引入 BullMQ 或其它队列。key 命名统一 `{业务}:{标识}:{id}`，全部设置 TTL。
 
