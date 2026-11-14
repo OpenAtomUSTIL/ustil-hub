@@ -5,6 +5,7 @@ export const DEFAULT_UPLOAD_MAX_SIZE = 10 * 1024 * 1024;
 export const configuration = registerAs('app', () => ({
   nodeEnv: process.env.NODE_ENV ?? 'development',
   port: parseInt(process.env.PORT ?? '3000', 10),
+  trustProxyHops: Number(process.env.TRUST_PROXY_HOPS ?? '0'),
   corsOrigin: process.env.CORS_ORIGIN ?? 'http://localhost:5173',
   databaseUrl: process.env.DATABASE_URL ?? '',
   redisUrl: process.env.REDIS_URL ?? '',

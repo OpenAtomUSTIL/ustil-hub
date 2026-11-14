@@ -1,10 +1,11 @@
+import { estimateReadingMinutes } from './reading-time';
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { Page } from '../../common/dto/page';
 import { CurrentAuthUser } from '../../common/decorators/current-user.decorator';
 import { Role } from '../../common/decorators/roles.decorator';
 import { requireRole } from '../../common/permissions';
 import { TagTargetType } from '../../db/schema';
-import { uniqueSlug } from '../../common/utils/identifiers';
+import { insertWithUniqueSlug } from '../../common/utils/identifiers';
 import { AuditLogService } from '../audit/audit-log.service';
 import { TagsService } from '../tags/tags.service';
 import { UsersService } from '../users/users.service';
@@ -68,6 +69,7 @@ export class ArticlesService {
       id: row.id,
       slug: row.slug,
       title: row.title,
+      readingMinutes: estimateReadingMinutes(row.content),
       excerpt: this.excerpt(row.content),
       tags,
       author,
@@ -82,6 +84,7 @@ export class ArticlesService {
       id: row.id,
       slug: row.slug,
       title: row.title,
+      readingMinutes: estimateReadingMinutes(row.content),
       content: row.content,
       tags,
       author,
@@ -159,14 +162,17 @@ export class ArticlesService {
     // MEMBER 先审后发 → PENDING；ALUMNI/WHEEL/ADMIN 先发后审 → PUBLISHED
     const status = user.role === Role.MEMBER ? 'PENDING' : 'PUBLISHED';
     const names = this.tagsService.normalizeTags(dto.tags) ?? [];
-    const slug = await uniqueSlug(dto.title, (s) => this.articlesRepository.slugExists(s));
-    const row = await this.articlesRepository.insert({
-      title: dto.title,
-      slug,
-      content: dto.content,
-      authorId: user.id,
-      status,
-    });
+    const row = await insertWithUniqueSlug(
+      dto.title,
+      (slug) => this.articlesRepository.slugExists(slug),
+      (slug) => this.articlesRepository.insert({
+        title: dto.title,
+        slug,
+        content: dto.content,
+        authorId: user.id,
+        status,
+      }),
+    );
     await this.tagsService.syncTags(TagTargetType.ARTICLE, row.id, names);
     await this.auditLogService.record({
       actor: user,
@@ -180,28 +186,30 @@ export class ArticlesService {
 
   async update(id: string, user: CurrentAuthUser, dto: UpdateArticleDto): Promise<ArticleDetail> {
     requireRole(user, Role.MEMBER, Role.ALUMNI, Role.WHEEL, Role.ADMIN);
-    const row = await this.articlesRepository.findById(id);
-    if (!row) {
-      throw new NotFoundException('文章不存在');
-    }
-    if (row.authorId !== user.id) {
-      throw new ForbiddenException('无权访问该资源');
-    }
-    // MEMBER 只能编辑自己的 PENDING / REJECTED 文章
-    if (user.role === Role.MEMBER && row.status !== 'PENDING' && row.status !== 'REJECTED') {
-      throw new ForbiddenException('已发布的文章需联系管理员修改');
-    }
-    const names = this.tagsService.normalizeTags(dto.tags);
-    if (dto.title !== undefined || dto.content !== undefined || names !== undefined) {
-      await this.articlesRepository.update(id, {
-        ...(dto.title !== undefined ? { title: dto.title } : {}),
-        ...(dto.content !== undefined ? { content: dto.content } : {}),
-        ...(row.status === 'REJECTED' ? { status: 'PENDING', reviewNote: null, reviewedBy: null, reviewedAt: null } : {}),
-      });
-    }
-    if (names !== undefined) {
-      await this.tagsService.syncTags(TagTargetType.ARTICLE, id, names);
-    }
+    const row = await this.articlesRepository.withArticleLock(id, async (row, tx) => {
+      if (!row) {
+        throw new NotFoundException('文章不存在');
+      }
+      if (row.authorId !== user.id) {
+        throw new ForbiddenException('无权访问该资源');
+      }
+      // MEMBER 只能编辑自己的 PENDING / REJECTED 文章
+      if (user.role === Role.MEMBER && row.status !== 'PENDING' && row.status !== 'REJECTED') {
+        throw new ForbiddenException('已发布的文章需联系管理员修改');
+      }
+      const names = this.tagsService.normalizeTags(dto.tags);
+      if (dto.title !== undefined || dto.content !== undefined || names !== undefined) {
+        await this.articlesRepository.update(id, {
+          ...(dto.title !== undefined ? { title: dto.title } : {}),
+          ...(dto.content !== undefined ? { content: dto.content } : {}),
+          ...(row.status === 'REJECTED' ? { status: 'PENDING', reviewNote: null, reviewedBy: null, reviewedAt: null } : {}),
+        }, tx);
+      }
+      if (names !== undefined) {
+        await this.tagsService.syncTags(TagTargetType.ARTICLE, id, names, tx);
+      }
+      return row;
+    });
     await this.auditLogService.record({
       actor: user,
       action: 'article.update',
@@ -214,18 +222,20 @@ export class ArticlesService {
 
   async remove(id: string, user: CurrentAuthUser): Promise<void> {
     requireRole(user, Role.MEMBER, Role.ALUMNI, Role.WHEEL, Role.ADMIN);
-    const row = await this.articlesRepository.findById(id);
-    if (!row) {
-      throw new NotFoundException('文章不存在');
-    }
-    if (row.authorId !== user.id && user.role !== Role.ADMIN) {
-      throw new ForbiddenException('无权访问该资源');
-    }
-    // MEMBER 只能删除自己的 PENDING / REJECTED 文章
-    if (user.role === Role.MEMBER && row.status !== 'PENDING' && row.status !== 'REJECTED') {
-      throw new ForbiddenException('已发布的文章需联系管理员删除');
-    }
-    await this.articlesRepository.softDeleteById(id);
+    const row = await this.articlesRepository.withArticleLock(id, async (row, tx) => {
+      if (!row) {
+        throw new NotFoundException('文章不存在');
+      }
+      if (row.authorId !== user.id && user.role !== Role.ADMIN) {
+        throw new ForbiddenException('无权访问该资源');
+      }
+      // MEMBER 只能删除自己的 PENDING / REJECTED 文章
+      if (user.role === Role.MEMBER && row.status !== 'PENDING' && row.status !== 'REJECTED') {
+        throw new ForbiddenException('已发布的文章需联系管理员删除');
+      }
+      await this.articlesRepository.softDeleteById(id, tx);
+      return row;
+    });
     await this.auditLogService.record({
       actor: user,
       action: 'article.delete',
@@ -269,40 +279,42 @@ export class ArticlesService {
     note?: string,
   ): Promise<ArticleDetail> {
     requireRole(user, Role.WHEEL, Role.ADMIN);
-    const row = await this.articlesRepository.findById(id);
-    if (!row) {
-      throw new NotFoundException('文章不存在');
-    }
-    const statusMap: Record<string, string> = {
-      approve: 'PUBLISHED',
-      reject: 'REJECTED',
-      hide: 'HIDDEN',
-      unhide: 'PUBLISHED',
-    };
-    const nextStatus = statusMap[action];
-    if (!nextStatus) {
-      throw new ConflictException('未知审核操作');
-    }
-    // 状态机校验
-    if (action === 'approve' && row.status !== 'PENDING') {
-      throw new ConflictException('仅待审文章可通过');
-    }
-    if (action === 'reject' && row.status !== 'PENDING') {
-      throw new ConflictException('仅待审文章可拒绝');
-    }
-    if (action === 'hide' && row.status !== 'PUBLISHED') {
-      throw new ConflictException('仅已发布文章可隐藏');
-    }
-    if (action === 'unhide' && row.status !== 'HIDDEN') {
-      throw new ConflictException('仅已隐藏文章可取消隐藏');
-    }
-    await this.articlesRepository.updateStatus(id, nextStatus, user.id, note);
+    const row = await this.articlesRepository.withArticleLock(id, async (row, tx) => {
+      if (!row) {
+        throw new NotFoundException('文章不存在');
+      }
+      const statusMap: Record<string, string> = {
+        approve: 'PUBLISHED',
+        reject: 'REJECTED',
+        hide: 'HIDDEN',
+        unhide: 'PUBLISHED',
+      };
+      const nextStatus = statusMap[action];
+      if (!nextStatus) {
+        throw new ConflictException('未知审核操作');
+      }
+      // 状态机校验
+      if (action === 'approve' && row.status !== 'PENDING') {
+        throw new ConflictException('仅待审文章可通过');
+      }
+      if (action === 'reject' && row.status !== 'PENDING') {
+        throw new ConflictException('仅待审文章可拒绝');
+      }
+      if (action === 'hide' && row.status !== 'PUBLISHED') {
+        throw new ConflictException('仅已发布文章可隐藏');
+      }
+      if (action === 'unhide' && row.status !== 'HIDDEN') {
+        throw new ConflictException('仅已隐藏文章可取消隐藏');
+      }
+      await this.articlesRepository.updateStatus(id, nextStatus, user.id, note, tx);
+      return { ...row, nextStatus };
+    });
     await this.auditLogService.record({
       actor: user,
       action: `article.review.${action}`,
       targetType: 'ARTICLE',
       targetId: id,
-      detail: { title: row.title, from: row.status, to: nextStatus, note },
+      detail: { title: row.title, from: row.status, to: row.nextStatus, note },
     });
     return this.getDetail(id, user);
   }

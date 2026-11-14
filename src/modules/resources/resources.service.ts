@@ -4,7 +4,7 @@ import { Page } from '../../common/dto/page';
 import { Role } from '../../common/decorators/roles.decorator';
 import { requireRole } from '../../common/permissions';
 import { TagTargetType } from '../../db/schema';
-import { uniqueSlug } from '../../common/utils/identifiers';
+import { insertWithUniqueSlug } from '../../common/utils/identifiers';
 import { AuditLogService } from '../audit/audit-log.service';
 import { TagsService } from '../tags/tags.service';
 import { UsersService } from '../users/users.service';
@@ -84,15 +84,18 @@ export class ResourcesService {
   async create(user: CurrentAuthUser, dto: CreateResourceDto): Promise<ResourceItem> {
     requireRole(user, Role.WHEEL, Role.ADMIN);
     const names = this.tagsService.normalizeTags(dto.tags) ?? [];
-    const slug = await uniqueSlug(dto.title, (s) => this.resourcesRepository.slugExists(s));
-    const row = await this.resourcesRepository.insert({
-      title: dto.title,
-      slug,
-      description: dto.description ?? null,
-      url: dto.url,
-      category: dto.category,
-      creatorId: user.id,
-    });
+    const row = await insertWithUniqueSlug(
+      dto.title,
+      (slug) => this.resourcesRepository.slugExists(slug),
+      (slug) => this.resourcesRepository.insert({
+        title: dto.title,
+        slug,
+        description: dto.description ?? null,
+        url: dto.url,
+        category: dto.category,
+        creatorId: user.id,
+      }),
+    );
     await this.tagsService.syncTags(TagTargetType.RESOURCE, row.id, names);
     await this.auditLogService.record({
       actor: user,

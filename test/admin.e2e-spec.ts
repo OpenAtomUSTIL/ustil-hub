@@ -24,6 +24,7 @@ import { UsersService } from '../src/modules/users/users.service';
 const testConfig: AppConfig = {
   nodeEnv: 'test',
   port: 3000,
+  trustProxyHops: 0,
   corsOrigin: 'http://localhost:5173',
   databaseUrl: 'postgres://test',
   redisUrl: 'redis://test',

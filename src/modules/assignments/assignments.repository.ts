@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, type DatabaseTransaction } from '../../db';
 import { assignmentSubmissions, assignments } from '../../db/schema';
 import { isUuid } from '../../common/utils/identifiers';
 
@@ -86,8 +86,8 @@ export class AssignmentsRepository {
       );
   }
 
-  async findSubmission(assignmentId: string, submitterId: string): Promise<SubmissionRow | null> {
-    const rows = await db
+  async findSubmission(assignmentId: string, submitterId: string, connection: typeof db | DatabaseTransaction = db): Promise<SubmissionRow | null> {
+    const rows = await connection
       .select()
       .from(assignmentSubmissions)
       .where(
@@ -118,14 +118,21 @@ export class AssignmentsRepository {
     return new Set(rows.map((row) => row.attachmentId));
   }
 
+  async withSubmissionLock<T>(assignmentId: string, submitterId: string, operation: (tx: DatabaseTransaction) => Promise<T>): Promise<T> {
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`submission:${assignmentId}:${submitterId}`}, 0))`);
+      return operation(tx);
+    });
+  }
+
   // 重复提交：按 (assignment_id, submitter_id) 覆盖旧提交，保留 created_at、刷新 updated_at
   async upsertSubmission(row: {
     assignmentId: string;
     submitterId: string;
     note: string | null;
     attachmentId: string;
-  }): Promise<SubmissionRow> {
-    const inserted = await db
+  }, connection: typeof db | DatabaseTransaction = db): Promise<SubmissionRow> {
+    const inserted = await connection
       .insert(assignmentSubmissions)
       .values(row)
       .onConflictDoUpdate({

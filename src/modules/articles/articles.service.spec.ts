@@ -26,10 +26,13 @@ function row(overrides: Partial<ArticleRow> = {}): ArticleRow {
   } as ArticleRow;
 }
 
+const transaction = {};
+
 describe('ArticlesService', () => {
   let service: ArticlesService;
 
   const articlesRepository = {
+    withArticleLock: jest.fn(),
     list: jest.fn(),
     findById: jest.fn(),
     findByIdIncludingDeleted: jest.fn(),
@@ -58,6 +61,7 @@ describe('ArticlesService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    articlesRepository.withArticleLock.mockImplementation((id, operation) => articlesRepository.findById(id).then((row: ArticleRow | null) => operation(row, transaction)));
     articlesRepository.slugExists.mockResolvedValue(false);
     articlesRepository.findByIdOrSlug.mockImplementation((v) => articlesRepository.findById(v));
     const moduleRef = await Test.createTestingModule({
@@ -312,6 +316,7 @@ describe('ArticlesService', () => {
       'PUBLISHED',
       '01890a5d-ac96-7000-8000-000000000001',
       undefined,
+      transaction,
     );
   });
 
@@ -390,4 +395,18 @@ describe('ArticlesService', () => {
 
     expect(result.status).toBe('PENDING');
   });
+  it('列表按完整正文计算阅读时长，不能按截断摘要计算', async () => {
+    articlesRepository.list.mockResolvedValue({ rows: [row({ content: '中'.repeat(601) })], total: 1 });
+    tagsService.getNamesByTargets.mockResolvedValue(new Map());
+    const result = await service.list({ page: 1, pageSize: 20 });
+    expect(result.items[0]).toEqual(expect.objectContaining({ readingMinutes: 3 }));
+  });
+
+  it('详情反映最新正文的阅读时长', async () => {
+    articlesRepository.findById.mockResolvedValue(row({ content: 'word '.repeat(401) }));
+    tagsService.getNamesByTargets.mockResolvedValue(new Map());
+    const result = await service.getDetail('01890a5d-ac96-7000-8000-0000000000a1');
+    expect(result).toEqual(expect.objectContaining({ readingMinutes: 3 }));
+  });
+
 });

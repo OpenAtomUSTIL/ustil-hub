@@ -27,6 +27,7 @@ import { UsersService } from '../src/modules/users/users.service';
 const testConfig: AppConfig = {
   nodeEnv: 'test',
   port: 3000,
+  trustProxyHops: 0,
   corsOrigin: 'http://localhost:5173',
   databaseUrl: 'postgres://test',
   redisUrl: 'redis://test',
@@ -67,6 +68,7 @@ describe('注册流程（邀请码分支 e2e）', () => {
     countActive: jest.fn(),
   };
   const redis = {
+    eval: jest.fn().mockResolvedValue(1),
     get: jest.fn(),
     set: jest.fn(),
     del: jest.fn(),

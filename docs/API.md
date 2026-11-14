@@ -345,6 +345,8 @@ TagView = { id: string; name: string; count: number }
 - 非 `PUBLISHED` 文章仅**作者**与 `WHEEL`/`ADMIN` 可见（他人访问详情 404）。
 - 审核记录 `reviewedBy` / `reviewedAt` / `reviewNote`；拒绝/隐藏备注经 `ArticleDetail.reviewNote` 对作者可见。
 
+**阅读时长**：文章列表与详情均返回 `readingMinutes`（正整数分钟），按当前完整正文估算：中文 300 字/分钟、其他文字 200 词/分钟，混合累计后向上取整，至少 1 分钟。链接地址、图片与 HTML 标签不计入，代码文字保留；该字段只读、不存库，编辑正文后自动重新计算。
+
 ### 3.1 文章列表 `GET /api/v1/articles`
 
 - 权限：🔐 登录

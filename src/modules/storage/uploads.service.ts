@@ -131,7 +131,7 @@ export class UploadsService {
     if (!row) {
       return;
     }
-    await this.storage.remove(row.key).catch(() => undefined);
+    await this.storage.remove(row.key);
     await this.attachmentsRepository.deleteById(id);
   }
 

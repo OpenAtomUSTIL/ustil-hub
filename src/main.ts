@@ -2,14 +2,17 @@ import 'reflect-metadata';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { appValidationPipe } from './common/pipes/app-validation.pipe';
 import { AppConfig, configuration } from './config/configuration';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
   const cfg = app.get<AppConfig>(configuration.KEY);
 
+  // 仅在后端无法被外网直连、且入口代理覆盖转发头时启用单跳信任。
+  app.set('trust proxy', cfg.trustProxyHops);
   app.setGlobalPrefix('api/v1');
   app.use(helmet());
   app.use(cookieParser());

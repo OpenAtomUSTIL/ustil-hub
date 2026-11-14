@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { and, desc, eq, gte, ilike, inArray, isNull, like, lt, ne, or, sql } from 'drizzle-orm';
-import { db, Database } from '../../db';
+import { db, Database, type DatabaseTransaction } from '../../db';
 import {
   articles,
   assignmentSubmissions,
@@ -71,6 +71,14 @@ export class UsersRepository {
     ));
   }
 
+  async withUsernameLock<T>(operation: (tx: DatabaseTransaction) => Promise<T>): Promise<T> {
+    return db.transaction(async (tx) => {
+      // 当前用户名与历史用户名跨两张表，共用事务锁保护名称分配。
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext('ustil:usernames'))`);
+      return operation(tx);
+    });
+  }
+
   async insert(row: {
     email: string | null;
     phone: string | null;
@@ -79,13 +87,13 @@ export class UsersRepository {
     username: string;
     role?: UserRow['role'];
     inviteCodeId?: string | null;
-  }): Promise<UserRow> {
-    const inserted = await db.insert(users).values(row).returning();
+  }, connection: Database | DatabaseTransaction = db): Promise<UserRow> {
+    const inserted = await connection.insert(users).values(row).returning();
     return inserted[0];
   }
 
-  async findById(id: string): Promise<UserRow | null> {
-    const rows = await db.select().from(users).where(eq(users.id, id)).limit(1);
+  async findById(id: string, connection: Database | DatabaseTransaction = db): Promise<UserRow | null> {
+    const rows = await connection.select().from(users).where(eq(users.id, id)).limit(1);
     return rows[0] ?? null;
   }
 
@@ -109,8 +117,8 @@ export class UsersRepository {
   }
 
   /** 占用检查含历史 handle（旧 handle 不可被他人抢占） */
-  async usernameExists(username: string): Promise<boolean> {
-    const rows = await db
+  async usernameExists(username: string, connection: Database | DatabaseTransaction = db): Promise<boolean> {
+    const rows = await connection
       .select({ id: users.id })
       .from(users)
       .where(eq(users.username, username))
@@ -118,7 +126,7 @@ export class UsersRepository {
     if (rows.length > 0) {
       return true;
     }
-    const history = await db
+    const history = await connection
       .select({ id: userUsernameHistory.id })
       .from(userUsernameHistory)
       .where(eq(userUsernameHistory.username, username))
@@ -131,8 +139,9 @@ export class UsersRepository {
     id: string,
     username: string,
     previousUsername: string,
+    connection: DatabaseTransaction,
   ): Promise<UserRow | null> {
-    return db.transaction(async (tx) => {
+    return connection.transaction(async (tx) => {
       await tx
         .insert(userUsernameHistory)
         .values({ userId: id, username: previousUsername })

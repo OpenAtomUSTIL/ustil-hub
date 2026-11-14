@@ -1,3 +1,4 @@
+import { type DatabaseTransaction } from '../../db';
 import { Injectable } from '@nestjs/common';
 import { asc, desc, eq, inArray, sql, and, isNull, or } from 'drizzle-orm';
 import { db } from '../../db';
@@ -61,9 +62,9 @@ export class TagsRepository {
   }
 
   // 覆盖目标的标签引用：补建缺失标签 → 清旧引用 → 写新引用（names 必须已规范化小写去重）
-  async syncTaggings(targetType: TagTargetType, targetId: string, names: string[]): Promise<void> {
-    await db.transaction(async (tx) => {
-      for (const name of names) {
+  async syncTaggings(targetType: TagTargetType, targetId: string, names: string[], connection?: DatabaseTransaction): Promise<void> {
+    await (connection ?? db).transaction(async (tx) => {
+      for (const name of [...names].sort()) {
         await tx.insert(tags).values({ name }).onConflictDoNothing({ target: tags.name });
       }
       await tx

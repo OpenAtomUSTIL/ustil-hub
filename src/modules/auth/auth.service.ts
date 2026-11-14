@@ -105,7 +105,17 @@ export class AuthService {
     return tokens;
   }
 
-  async register(dto: RegisterDto): Promise<{ user: UserSelf; tokens: AuthTokens }> {
+  async register(dto: RegisterDto, ip = 'unknown'): Promise<{ user: UserSelf; tokens: AuthTokens }> {
+    // 先限制尝试次数，再执行 Argon2；计数和过期必须原子设置，失败请求也占预算。
+    const attempts = Number(await this.redis.eval(
+      `local count = redis.call('INCR', KEYS[1])
+       if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
+       return count`,
+      1, `register_attempt:${ip}`, 15 * 60,
+    ));
+    if (attempts > 10) {
+      throw new HttpException('注册尝试过于频繁，请稍后再试', HttpStatus.TOO_MANY_REQUESTS);
+    }
     const identifier = normalizeIdentifier(dto.identifier);
     const isEmailIdentifier = identifier.includes('@');
     const passwordHash = await hashPassword(dto.password);

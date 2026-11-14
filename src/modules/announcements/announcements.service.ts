@@ -3,7 +3,7 @@ import { CurrentAuthUser } from '../../common/decorators/current-user.decorator'
 import { Page } from '../../common/dto/page';
 import { Role } from '../../common/decorators/roles.decorator';
 import { requireRole } from '../../common/permissions';
-import { uniqueSlug } from '../../common/utils/identifiers';
+import { insertWithUniqueSlug } from '../../common/utils/identifiers';
 import { AuditLogService } from '../audit/audit-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UsersService } from '../users/users.service';
@@ -77,14 +77,17 @@ export class AnnouncementsService {
 
   async create(user: CurrentAuthUser, dto: CreateAnnouncementDto): Promise<AnnouncementItem> {
     requireRole(user, Role.WHEEL, Role.ADMIN);
-    const slug = await uniqueSlug(dto.title, (s) => this.announcementsRepository.slugExists(s));
-    const row = await this.announcementsRepository.insert({
-      title: dto.title,
-      slug,
-      content: dto.content,
-      pinned: dto.pinned ?? false,
-      authorId: user.id,
-    });
+    const row = await insertWithUniqueSlug(
+      dto.title,
+      (slug) => this.announcementsRepository.slugExists(slug),
+      (slug) => this.announcementsRepository.insert({
+        title: dto.title,
+        slug,
+        content: dto.content,
+        pinned: dto.pinned ?? false,
+        authorId: user.id,
+      }),
+    );
     if (dto.notify) {
       const userIds = await this.usersService.listActiveUserIds();
       await this.notificationsService.notifyUsers(userIds, {

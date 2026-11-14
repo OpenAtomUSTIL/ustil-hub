@@ -1,3 +1,4 @@
+import { type DatabaseTransaction } from '../../db';
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { TagTargetType } from '../../db/schema';
 import { TagsRepository } from './tags.repository';
@@ -36,8 +37,8 @@ export class TagsService {
     return names;
   }
 
-  async syncTags(targetType: TagTargetType, targetId: string, names: string[]): Promise<void> {
-    await this.tagsRepository.syncTaggings(targetType, targetId, names);
+  async syncTags(targetType: TagTargetType, targetId: string, names: string[], connection?: DatabaseTransaction): Promise<void> {
+    await this.tagsRepository.syncTaggings(targetType, targetId, names, ...(connection ? [connection] as const : []));
   }
 
   async cleanup(targetType: TagTargetType, targetId: string): Promise<void> {

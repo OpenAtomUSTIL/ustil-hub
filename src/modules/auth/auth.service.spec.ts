@@ -15,6 +15,7 @@ import { hashPassword } from './password';
 const testConfig: AppConfig = {
   nodeEnv: 'test',
   port: 3000,
+  trustProxyHops: 0,
   corsOrigin: 'http://localhost:5173',
   databaseUrl: 'postgres://test',
   redisUrl: 'redis://test',
@@ -69,6 +70,7 @@ describe('AuthService', () => {
     revoke: jest.fn(),
   };
   const redis = {
+    eval: jest.fn().mockResolvedValue(1),
     get: jest.fn(),
     set: jest.fn(),
     del: jest.fn(),

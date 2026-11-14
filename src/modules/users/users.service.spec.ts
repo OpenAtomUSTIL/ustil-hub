@@ -38,10 +38,13 @@ function row(overrides: Partial<UserRow> = {}): UserRow {
   } as UserRow;
 }
 
+const transaction = {};
+
 describe('UsersService', () => {
   let service: UsersService;
 
   const usersRepository = {
+    withUsernameLock: jest.fn(),
     insert: jest.fn(),
     findById: jest.fn(),
     findByUsername: jest.fn(),
@@ -101,6 +104,7 @@ describe('UsersService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    usersRepository.withUsernameLock.mockImplementation((operation) => operation(transaction));
     usersRepository.findByIdOrUsername.mockImplementation((v: string) =>
       usersRepository.findById(v),
     );
@@ -582,7 +586,7 @@ describe('UsersService', () => {
     usersRepository.updateUsername.mockResolvedValue(row({ username: 'new-name' }));
     const result = await service.updateUsername(targetId, { username: 'New-Name' });
     expect(result.username).toBe('new-name');
-    expect(usersRepository.updateUsername).toHaveBeenCalledWith(targetId, 'new-name', 'testuser');
+    expect(usersRepository.updateUsername).toHaveBeenCalledWith(targetId, 'new-name', 'testuser', transaction);
   });
 
   it('社区数据徽章：按用户名返回四类计数、近一年贡献与站内连击', async () => {

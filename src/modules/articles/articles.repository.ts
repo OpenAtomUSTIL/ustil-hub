@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { type SQL, and, desc, eq, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
-import { db } from '../../db';
+import { db, type DatabaseTransaction } from '../../db';
 import { articles } from '../../db/schema';
 import { isUuid } from '../../common/utils/identifiers';
 
@@ -8,6 +8,14 @@ export type ArticleRow = typeof articles.$inferSelect;
 
 @Injectable()
 export class ArticlesRepository {
+  async withArticleLock<T>(id: string, operation: (row: ArticleRow | null, tx: DatabaseTransaction) => Promise<T>): Promise<T> {
+    return db.transaction(async (tx) => {
+      const rows = await tx.select().from(articles)
+        .where(and(eq(articles.id, id), isNull(articles.deletedAt))).for('update');
+      return operation(rows[0] ?? null, tx);
+    });
+  }
+
   private buildWhere(
     keyword?: string,
     authorId?: string,
@@ -114,8 +122,9 @@ export class ArticlesRepository {
   async update(
     id: string,
     patch: { title?: string; content?: string; status?: string; reviewNote?: string | null; reviewedBy?: string | null; reviewedAt?: Date | null },
+    connection: typeof db | DatabaseTransaction = db,
   ): Promise<ArticleRow | null> {
-    const rows = await db
+    const rows = await connection
       .update(articles)
       .set(patch)
       .where(eq(articles.id, id))
@@ -128,8 +137,9 @@ export class ArticlesRepository {
     status: string,
     reviewedBy: string,
     reviewNote?: string,
+    connection: typeof db | DatabaseTransaction = db,
   ): Promise<ArticleRow | null> {
-    const rows = await db
+    const rows = await connection
       .update(articles)
       .set({
         status,
@@ -143,8 +153,8 @@ export class ArticlesRepository {
   }
 
   // 软删除：置 deleted_at；taggings 保留，恢复后完整可见
-  async softDeleteById(id: string): Promise<ArticleRow | null> {
-    const rows = await db
+  async softDeleteById(id: string, connection: typeof db | DatabaseTransaction = db): Promise<ArticleRow | null> {
+    const rows = await connection
       .update(articles)
       .set({ deletedAt: new Date() })
       .where(and(eq(articles.id, id), isNull(articles.deletedAt)))

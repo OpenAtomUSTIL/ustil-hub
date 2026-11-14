@@ -4,7 +4,7 @@ import { Role } from '../../common/decorators/roles.decorator';
 import { Page } from '../../common/dto/page';
 import { requireRole } from '../../common/permissions';
 import { IssueStatus, TagTargetType } from '../../db/schema';
-import { uniqueSlug } from '../../common/utils/identifiers';
+import { insertWithUniqueSlug } from '../../common/utils/identifiers';
 import { AuditLogService } from '../audit/audit-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { TagsService } from '../tags/tags.service';
@@ -147,13 +147,16 @@ export class IssuesService {
       throw new ForbiddenException('无权访问该资源');
     }
     const names = this.tagsService.normalizeTags(dto.tags) ?? [];
-    const slug = await uniqueSlug(dto.title, (s) => this.issuesRepository.slugExists(s));
-    const row = await this.issuesRepository.insert({
-      title: dto.title,
-      slug,
-      content: dto.content,
-      authorId: user.id,
-    });
+    const row = await insertWithUniqueSlug(
+      dto.title,
+      (slug) => this.issuesRepository.slugExists(slug),
+      (slug) => this.issuesRepository.insert({
+        title: dto.title,
+        slug,
+        content: dto.content,
+        authorId: user.id,
+      }),
+    );
     await this.tagsService.syncTags(TagTargetType.ISSUE, row.id, names);
     await this.auditLogService.record({
       actor: user,

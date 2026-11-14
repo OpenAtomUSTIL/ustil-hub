@@ -4,6 +4,8 @@ export interface ArticleListItem {
   id: string;
   slug: string;
   title: string;
+  /** 根据当前完整正文估算，正整数分钟。 */
+  readingMinutes: number;
   excerpt: string;
   tags: string[];
   author: UserPublic;
@@ -16,6 +18,8 @@ export interface ArticleDetail {
   id: string;
   slug: string;
   title: string;
+  /** 根据当前完整正文估算，正整数分钟。 */
+  readingMinutes: number;
   content: string;
   tags: string[];
   author: UserPublic;

@@ -9,6 +9,7 @@ import { resolve } from 'path';
 import { uniqueUsername } from '../common/utils/identifiers';
 import { db } from '../db';
 import { users } from '../db/schema';
+import { UsersRepository } from '../modules/users/users.repository';
 import { hashPassword } from '../modules/auth/password';
 
 function loadLocalEnv(): void {
@@ -66,21 +67,11 @@ async function main(): Promise<void> {
   }
 
   const passwordHash = await hashPassword(password);
-  const username = await uniqueUsername('admin', async (u) => {
-    const rows = await db.select({ id: users.id }).from(users).where(eq(users.username, u)).limit(1);
-    return rows.length > 0;
+  const repository = new UsersRepository();
+  const row = await repository.withUsernameLock(async (tx) => {
+    const username = await uniqueUsername('admin', (name) => repository.usernameExists(name, tx));
+    return repository.insert({ email, phone: null, passwordHash, nickname: '管理员', username, role: 'ADMIN' }, tx);
   });
-  const [row] = await db
-    .insert(users)
-    .values({
-      email,
-      passwordHash,
-      nickname: '管理员',
-      username,
-      role: 'ADMIN',
-      status: 'ACTIVE',
-    })
-    .returning({ id: users.id });
 
   console.log(`[seed-admin] 已创建 ADMIN：${email}（id=${row.id}）`);
 }

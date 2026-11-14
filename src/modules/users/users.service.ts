@@ -94,20 +94,22 @@ export class UsersService {
     role?: Role;
     inviteCodeId?: string | null;
   }): Promise<UserSelf> {
-    const username = await uniqueUsername(input.nickname, (u) =>
-      this.usersRepository.usernameExists(u),
-    );
     try {
-      const row = await this.usersRepository.insert({
-        email: input.email ?? null,
-        phone: input.phone ?? null,
-        passwordHash: input.passwordHash,
-        nickname: input.nickname,
-        username,
-        ...(input.role ? { role: input.role } : {}),
-        inviteCodeId: input.inviteCodeId ?? null,
+      return await this.usersRepository.withUsernameLock(async (tx) => {
+        const username = await uniqueUsername(input.nickname, (u) =>
+          this.usersRepository.usernameExists(u, tx),
+        );
+        const row = await this.usersRepository.insert({
+          email: input.email ?? null,
+          phone: input.phone ?? null,
+          passwordHash: input.passwordHash,
+          nickname: input.nickname,
+          username,
+          ...(input.role ? { role: input.role } : {}),
+          inviteCodeId: input.inviteCodeId ?? null,
+        }, tx);
+        return this.toSelf(row);
       });
-      return this.toSelf(row);
     } catch (error) {
       if (isUniqueViolation(error)) {
         throw new ConflictException('该邮箱或手机号已被注册');
@@ -685,27 +687,29 @@ export class UsersService {
     if (!USERNAME_RE.test(username)) {
       throw new BadRequestException('用户名需为 2-32 位字母、数字、- 或 _');
     }
-    const current = await this.usersRepository.findById(userId);
-    if (!current) {
-      throw new NotFoundException('用户不存在');
-    }
-    if (current.username === username) {
-      return this.toSelf(current);
-    }
-    if (await this.usersRepository.usernameExists(username)) {
-      throw new ConflictException('该用户名已被占用');
-    }
-    let updated: UserRow | null;
-    try {
-      updated = await this.usersRepository.updateUsername(userId, username, current.username);
-    } catch (error) {
-      if (isUniqueViolation(error)) throw new ConflictException('该用户名已被占用');
-      throw error;
-    }
-    if (!updated) {
-      throw new NotFoundException('用户不存在');
-    }
-    return this.toSelf(updated);
+    return this.usersRepository.withUsernameLock(async (tx) => {
+      const current = await this.usersRepository.findById(userId, tx);
+      if (!current) {
+        throw new NotFoundException('用户不存在');
+      }
+      if (current.username === username) {
+        return this.toSelf(current);
+      }
+      if (await this.usersRepository.usernameExists(username, tx)) {
+        throw new ConflictException('该用户名已被占用');
+      }
+      let updated: UserRow | null;
+      try {
+        updated = await this.usersRepository.updateUsername(userId, username, current.username, tx);
+      } catch (error) {
+        if (isUniqueViolation(error)) throw new ConflictException('该用户名已被占用');
+        throw error;
+      }
+      if (!updated) {
+        throw new NotFoundException('用户不存在');
+      }
+      return this.toSelf(updated);
+    });
   }
 
   // ===== 关注 =====

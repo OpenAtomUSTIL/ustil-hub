@@ -4,6 +4,7 @@ import Joi from 'joi';
 export const envValidationSchema = Joi.object({
   NODE_ENV: Joi.string().valid('development', 'production', 'test').default('development'),
   PORT: Joi.number().integer().positive().default(3000),
+  TRUST_PROXY_HOPS: Joi.number().integer().valid(0, 1).default(0),
   CORS_ORIGIN: Joi.string().default('http://localhost:5173'),
   DATABASE_URL: Joi.string().required(),
   REDIS_URL: Joi.string().required(),

@@ -1,9 +1,9 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Page } from '../../common/dto/page';
 import { CurrentAuthUser } from '../../common/decorators/current-user.decorator';
 import { Role } from '../../common/decorators/roles.decorator';
 import { requireRole } from '../../common/permissions';
-import { uniqueSlug } from '../../common/utils/identifiers';
+import { insertWithUniqueSlug } from '../../common/utils/identifiers';
 import { AuditLogService } from '../audit/audit-log.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { AttachmentView } from '../storage/storage.types';
@@ -27,6 +27,7 @@ import { UpdateAssignmentDto } from './dto/update-assignment.dto';
 
 @Injectable()
 export class AssignmentsService {
+  private readonly logger = new Logger(AssignmentsService.name);
   constructor(
     private readonly assignmentsRepository: AssignmentsRepository,
     private readonly usersService: UsersService,
@@ -196,15 +197,18 @@ export class AssignmentsService {
       throw new ForbiddenException('无权访问该资源');
     }
     this.assertWindowValid(dto.startAt, dto.deadlineAt);
-    const slug = await uniqueSlug(dto.title, (s) => this.assignmentsRepository.slugExists(s));
-    const row = await this.assignmentsRepository.insert({
-      title: dto.title,
-      slug,
-      description: dto.description,
-      publisherId: user.id,
-      startAt: dto.startAt,
-      deadlineAt: dto.deadlineAt,
-    });
+    const row = await insertWithUniqueSlug(
+      dto.title,
+      (slug) => this.assignmentsRepository.slugExists(slug),
+      (slug) => this.assignmentsRepository.insert({
+        title: dto.title,
+        slug,
+        description: dto.description,
+        publisherId: user.id,
+        startAt: dto.startAt,
+        deadlineAt: dto.deadlineAt,
+      }),
+    );
     // 发布作业：通知 MEMBER+ALUMNI 全体
     const memberIds = await this.usersService.listUserIdsByRoles([Role.MEMBER, Role.ALUMNI]);
     await this.notificationsService.notifyUsers(memberIds, {
@@ -275,18 +279,32 @@ export class AssignmentsService {
     }
 
     const attachment = await this.uploadsService.saveAssignmentFile(file, user.id);
-    const previous = await this.assignmentsRepository.findSubmission(id, user.id);
-    const submission = await this.assignmentsRepository.upsertSubmission({
-      assignmentId: id,
-      submitterId: user.id,
-      note: dto.note ?? null,
-      attachmentId: attachment.id,
-    });
-    if (previous && previous.attachmentId !== attachment.id) {
-      // 覆盖旧提交时清理旧附件（提交记录本身不删除）
-      await this.uploadsService.removeAttachment(previous.attachmentId);
+    let replaced: { submission: SubmissionRow; previous: SubmissionRow | null };
+    try {
+      replaced = await this.assignmentsRepository.withSubmissionLock(id, user.id, async (tx) => {
+        const previous = await this.assignmentsRepository.findSubmission(id, user.id, tx);
+        const submission = await this.assignmentsRepository.upsertSubmission({
+          assignmentId: id,
+          submitterId: user.id,
+          note: dto.note ?? null,
+          attachmentId: attachment.id,
+        }, tx);
+        return { submission, previous };
+      });
+    } catch (error) {
+      // 写入失败仅清理本次新附件，不触碰仍有效的旧提交。
+      await this.uploadsService.removeAttachment(attachment.id).catch(() => {
+        this.logger.warn(`failed to clean unused attachment ${attachment.id}`);
+      });
+      throw error;
     }
-    return this.toSubmissionView(submission, await this.submitterOf(user.id), attachment);
+    if (replaced.previous && replaced.previous.attachmentId !== attachment.id) {
+      // 数据库提交成功后才删除旧附件；清理失败不把成功提交报告为失败。
+      await this.uploadsService.removeAttachment(replaced.previous.attachmentId).catch(() => {
+        this.logger.warn(`failed to clean replaced attachment ${replaced.previous?.attachmentId}`);
+      });
+    }
+    return this.toSubmissionView(replaced.submission, await this.submitterOf(user.id), attachment);
   }
 
   private async submitterOf(userId: string): Promise<UserPublic> {

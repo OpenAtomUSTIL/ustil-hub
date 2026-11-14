@@ -55,6 +55,7 @@ describe('AssignmentsService', () => {
   let service: AssignmentsService;
 
   const assignmentsRepository = {
+    withSubmissionLock: jest.fn(),
     list: jest.fn(),
     findById: jest.fn(),
     findByIdOrSlug: jest.fn(),
@@ -91,6 +92,7 @@ describe('AssignmentsService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    assignmentsRepository.withSubmissionLock.mockImplementation((_assignmentId, _submitterId, operation) => operation({}));
     assignmentsRepository.slugExists.mockResolvedValue(false);
     assignmentsRepository.findByIdOrSlug.mockImplementation((v) => assignmentsRepository.findById(v));
     const moduleRef = await Test.createTestingModule({

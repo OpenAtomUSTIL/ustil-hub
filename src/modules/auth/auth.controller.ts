@@ -32,9 +32,10 @@ export class AuthController {
   @Post('register')
   async register(
     @Body() dto: RegisterDto,
+    @Ip() ip: string,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { user, tokens } = await this.authService.register(dto);
+    const { user, tokens } = await this.authService.register(dto, ip);
     setAuthCookies(res, tokens);
     return user;
   }
