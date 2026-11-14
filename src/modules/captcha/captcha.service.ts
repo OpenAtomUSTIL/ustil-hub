@@ -1,7 +1,7 @@
 import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import { REDIS_CLIENT, RedisClient } from '../../db/redis';
-import { randomCaptchaCode, renderCaptchaSvg } from './captcha-svg';
+import { randomCaptchaCode, renderCaptchaSvg, type CaptchaTheme } from './captcha-svg';
 
 const CAPTCHA_TTL_SECONDS = 5 * 60;
 const CAPTCHA_MAX_ATTEMPTS = 3;
@@ -28,11 +28,12 @@ export class CaptchaService {
     return createHash('sha256').update(code).digest('hex');
   }
 
-  async create(): Promise<{ captchaId: string; image: string }> {
+  /** theme 仅决定 SVG 配色（深/浅），答案生成与存储语义不受影响 */
+  async create(theme: CaptchaTheme = 'light'): Promise<{ captchaId: string; image: string }> {
     const captchaId = randomUUID();
     const code = randomCaptchaCode().toLowerCase();
     await this.redis.set(this.key(captchaId), this.hash(code), 'EX', CAPTCHA_TTL_SECONDS);
-    const svg = renderCaptchaSvg(code.toUpperCase());
+    const svg = renderCaptchaSvg(code.toUpperCase(), theme);
     return {
       captchaId,
       image: `data:image/svg+xml;base64,${Buffer.from(svg, 'utf8').toString('base64')}`,

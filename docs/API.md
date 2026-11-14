@@ -183,6 +183,7 @@ TagView = { id: string; name: string; count: number }
 
 - 权限：🌐 公开
 - 说明：自绘 SVG（无第三方服务）；答案以 sha256 哈希存 Redis（**不落明文**），TTL 5 分钟
+- 查询参数：`theme` 可选，`dark` = 深色调色板（深底亮字，供深色模式），默认浅色；仅影响图片配色，响应结构与校验规则不变
 - 成功：`200`
   ```json
   {
