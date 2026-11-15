@@ -108,6 +108,7 @@ export class ResourcesRepository {
       description?: string | null;
       url?: string;
       category?: ResourceCategory;
+      updatedAt?: Date;
     },
   ): Promise<ResourceRow | null> {
     const rows = await db.update(resources).set(patch).where(eq(resources.id, id)).returning();

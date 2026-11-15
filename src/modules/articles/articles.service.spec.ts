@@ -422,4 +422,23 @@ describe('ArticlesService', () => {
     expect(result).toEqual(expect.objectContaining({ readingMinutes: 3 }));
   });
 
+  it('仅清空标签时仍写入更新时间，不能向数据库提交空更新', async () => {
+    const article = row({ status: 'PUBLISHED' });
+    articlesRepository.findById.mockResolvedValue(article);
+    tagsService.getNamesByTargets.mockResolvedValue(new Map());
+    await service.update(article.id, { id: article.authorId, role: Role.ALUMNI }, { tags: [] });
+    expect(articlesRepository.update).toHaveBeenCalledWith(
+      article.id, expect.objectContaining({ updatedAt: expect.any(Date) }), transaction,
+    );
+    expect(tagsService.syncTags).toHaveBeenCalledWith('ARTICLE', article.id, [], transaction);
+  });
+
+  it('访客即使绕过控制器直接调用服务，也不能发布文章', async () => {
+    await expect(service.create(
+      { id: '01890a5d-ac96-7000-8000-000000000001', role: Role.VISITOR },
+      { title: '绕过前端', content: '正文' },
+    )).rejects.toThrow(ForbiddenException);
+    expect(articlesRepository.insert).not.toHaveBeenCalled();
+  });
+
 });

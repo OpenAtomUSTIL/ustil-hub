@@ -206,4 +206,15 @@ describe('ResourcesService', () => {
     expect(result).toEqual({ items: [], total: 0, page: 1, pageSize: 20 });
     expect(resourcesRepository.list).not.toHaveBeenCalled();
   });
+  it('仅清空标签不会生成空数据库更新', async () => {
+    const resource = row();
+    resourcesRepository.findById.mockResolvedValue(resource);
+    tagsService.getNamesByTargets.mockResolvedValue(new Map());
+    await service.update(resource.id, { id: resource.creatorId, role: Role.WHEEL }, { tags: [] });
+    expect(resourcesRepository.update).toHaveBeenCalledWith(
+      resource.id, expect.objectContaining({ updatedAt: expect.any(Date) }),
+    );
+    expect(tagsService.syncTags).toHaveBeenCalledWith('RESOURCE', resource.id, []);
+  });
+
 });

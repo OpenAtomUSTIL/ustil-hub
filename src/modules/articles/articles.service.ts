@@ -168,6 +168,7 @@ export class ArticlesService {
   }
 
   async create(user: CurrentAuthUser, dto: CreateArticleDto): Promise<ArticleDetail> {
+    requireRole(user, Role.MEMBER, Role.ALUMNI, Role.WHEEL, Role.ADMIN);
     // MEMBER 先审后发 → PENDING；ALUMNI/WHEEL/ADMIN 先发后审 → PUBLISHED
     const status = user.role === Role.MEMBER ? 'PENDING' : 'PUBLISHED';
     const names = this.tagsService.normalizeTags(dto.tags) ?? [];
@@ -209,6 +210,7 @@ export class ArticlesService {
       const names = this.tagsService.normalizeTags(dto.tags);
       if (dto.title !== undefined || dto.content !== undefined || names !== undefined) {
         await this.articlesRepository.update(id, {
+          updatedAt: new Date(),
           ...(dto.title !== undefined ? { title: dto.title } : {}),
           ...(dto.content !== undefined ? { content: dto.content } : {}),
           ...(row.status === 'REJECTED' ? { status: 'PENDING', reviewNote: null, reviewedBy: null, reviewedAt: null } : {}),

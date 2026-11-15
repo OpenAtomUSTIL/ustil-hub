@@ -121,7 +121,7 @@ export class ArticlesRepository {
 
   async update(
     id: string,
-    patch: { title?: string; content?: string; status?: string; reviewNote?: string | null; reviewedBy?: string | null; reviewedAt?: Date | null },
+    patch: { title?: string; content?: string; status?: string; reviewNote?: string | null; reviewedBy?: string | null; reviewedAt?: Date | null; updatedAt?: Date },
     connection: typeof db | DatabaseTransaction = db,
   ): Promise<ArticleRow | null> {
     const rows = await connection

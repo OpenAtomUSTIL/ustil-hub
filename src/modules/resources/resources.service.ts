@@ -127,6 +127,7 @@ export class ResourcesService {
     }
     const names = this.tagsService.normalizeTags(dto.tags);
     await this.resourcesRepository.update(id, {
+      updatedAt: new Date(),
       ...(dto.title !== undefined ? { title: dto.title } : {}),
       ...(dto.description !== undefined ? { description: dto.description } : {}),
       ...(dto.url !== undefined ? { url: dto.url } : {}),
