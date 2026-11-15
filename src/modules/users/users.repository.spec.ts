@@ -1,5 +1,17 @@
+import { sql } from 'drizzle-orm';
 import { Role } from '../../common/decorators/roles.decorator';
-import { UserStatus } from '../../db/schema';
+import { db } from '../../db';
+import {
+  announcements,
+  articles,
+  assignmentSubmissions,
+  assignments,
+  issues,
+  resources,
+  taggings,
+  UserStatus,
+  users,
+} from '../../db/schema';
 import { UsersRepository, UserRow } from './users.repository';
 
 const now = new Date('2026-01-01T00:00:00.000Z');
@@ -108,5 +120,114 @@ describe('UsersRepository.findByIdentifier', () => {
     expect(findById).not.toHaveBeenCalled();
     expect(findByUsername).not.toHaveBeenCalled();
     expect(findByEmailOrPhone).not.toHaveBeenCalled();
+  });
+});
+
+/** 剔除 purge（v8.0 修复）deleteById：伪事务记录语句顺序，锁住四个顺序要点 */
+describe('UsersRepository.deleteById', () => {
+  /** 伪事务：select/子查询记录到 events，update 的 set 载荷单独记录 */
+  function makeTx(role: string | null) {
+    const events: string[] = [];
+    const sets: Record<string, unknown>[] = [];
+    const tableNames = new Map<unknown, string>([
+      [users, 'users'],
+      [taggings, 'taggings'],
+      [articles, 'articles'],
+      [announcements, 'announcements'],
+      [resources, 'resources'],
+      [assignments, 'assignments'],
+      [assignmentSubmissions, 'submissions'],
+      [issues, 'issues'],
+    ]);
+    const name = (table: unknown): string => tableNames.get(table) ?? 'unknown';
+    const selectRows = role ? [{ role }] : [];
+
+    const select = () => {
+      const chain = {
+        from: (table: unknown) => {
+          events.push(`select:${name(table)}`);
+          return chain;
+        },
+        where: () => chain,
+        for: () => Promise.resolve(selectRows),
+        // inArray 子查询桩：只需通过 isSQLWrapper，永不真正编译执行
+        getSQL: () => sql`(select 1)`,
+      };
+      return chain;
+    };
+    const del = (table: unknown) => ({
+      where: () => {
+        events.push(`delete:${name(table)}`);
+        return {
+          returning: () => Promise.resolve([row()]),
+          then: (
+            resolve: (value: unknown[]) => unknown,
+            reject?: (reason: unknown) => unknown,
+          ) => Promise.resolve([]).then(resolve, reject),
+        };
+      },
+    });
+    const update = (table: unknown) => ({
+      set: (values: Record<string, unknown>) => ({
+        where: () => {
+          events.push(`update:${name(table)}`);
+          sets.push(values);
+          return Promise.resolve([]);
+        },
+      }),
+    });
+    return { events, sets, select, delete: del, update };
+  }
+
+  function mockTx(role: string | null): ReturnType<typeof makeTx> {
+    const tx = makeTx(role);
+    jest
+      .spyOn(db, 'transaction')
+      .mockImplementation(((fn: (t: ReturnType<typeof makeTx>) => Promise<unknown>) =>
+        fn(tx)) as unknown as typeof db.transaction);
+    return tx;
+  }
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('FOR UPDATE 校验不通过（目标不存在 / 角色变大）：返回 null 且不 purge', async () => {
+    const repository = new UsersRepository();
+
+    let tx = mockTx(null);
+    expect(await repository.deleteById('u-1', 'admin-actor')).toBeNull();
+    expect(tx.events).toEqual(['select:users']);
+
+    tx = mockTx('ALUMNI');
+    expect(await repository.deleteById('u-1', 'admin-actor')).toBeNull();
+    expect(tx.events).toEqual(['select:users']);
+  });
+
+  it('purge 语义：taggings→内容→作业改派→作业删→提交删→删号，改派给执行者', async () => {
+    const repository = new UsersRepository();
+    const tx = mockTx(Role.MEMBER);
+
+    const result = await repository.deleteById('u-1', 'admin-actor');
+
+    // 顺序要点：①锁行最先 ②taggings 先于内容删除 ③改派先于作业删除 ④本人提交先于删号
+    expect(tx.events).toEqual([
+      'select:users',
+      'select:articles',
+      'select:issues',
+      'select:resources',
+      'delete:taggings',
+      'delete:articles',
+      'delete:announcements',
+      'delete:resources',
+      'select:submissions',
+      'update:assignments',
+      'delete:assignments',
+      'delete:submissions',
+      'delete:users',
+    ]);
+    // 有他人提交的作业改派给执行剔除的管理员（reassignedPublisherTo）
+    expect(tx.sets).toEqual([{ publisherId: 'admin-actor' }]);
+    expect(result).toMatchObject({ id: '01890a5d-ac96-7000-8000-000000000001' });
   });
 });

@@ -813,7 +813,7 @@ TagView = { id: string; name: string; count: number }
 
 - 权限：🛡️ `WHEEL`、`ADMIN`
 - 寻址：`id` 支持 uuid / username / email / phone（uuid 优先），解析不到 `404`「用户不存在」
-- 说明：硬删账号，级联删除其 issues/replies；**仅 `MEMBER` / `VISITOR` 可被剔除**，`ALUMNI` 及以上不可
+- 说明：硬删账号，连同其名下文章/公告/资料/作业（含回收站软删行）一并删除，级联删除其 issues/replies/提交；名下作业已有他人提交的改派给操作者（不连带删他人提交）；**仅 `MEMBER` / `VISITOR` 可被剔除**，`ALUMNI` 及以上不可
 - 成功：`204`
 - 失败：`403` 目标角色不可剔除
 
@@ -1058,5 +1058,5 @@ TagView = { id: string; name: string; count: number }
 - **软删除语义**：文章/公告/资源/评论（讨论回复）的 `DELETE` 一律为软删（置 `deleted_at`）进回收站，
   可经 `POST /admin/trash/:type/:id/restore` 还原；软删期间列表/详情/搜索/tag 过滤/tag 计数均排除软删行
   （详情 404），`taggings` 保留、恢复后完整可见；审计 `detail` 保留删除前快照（标题/正文前 200 字）。
-  重复恢复返回 `409`。剔除学员为硬删并级联其 issues/replies（FK 级联不变）。
+  重复恢复返回 `409`。剔除学员为硬删并级联其 issues/replies（FK 级联不变），其名下文章/公告/资料/作业（含回收站软删行）随账号一并硬删，已有他人提交的作业改派给操作者。
 - 考试 / 测试题为预留能力（`MEMBER` 强制参与、`ALUMNI` 可参与、`WHEEL` 发布），当前未实现。

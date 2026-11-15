@@ -3,8 +3,10 @@ import { isEmail, isMobilePhone } from 'class-validator';
 import { and, desc, eq, gte, ilike, inArray, isNull, like, lt, ne, or, sql } from 'drizzle-orm';
 import { db, Database, type DatabaseTransaction } from '../../db';
 import {
+  announcements,
   articles,
   assignmentSubmissions,
+  assignments,
   issueReplies,
   issues,
   resources,
@@ -281,9 +283,75 @@ export class UsersRepository {
     return rows[0] ?? null;
   }
 
-  async deleteById(id: string): Promise<UserRow | null> {
-    const rows = await db.delete(users).where(and(eq(users.id, id), inArray(users.role, ['MEMBER', 'VISITOR']))).returning();
-    return rows[0] ?? null;
+  /**
+   * 剔除学员（v8.0 修复）：单事务 purge——名下文章/公告/资料/作业（含回收站软删行）与账号一并硬删，
+   * 避免 RESTRICT 外键把 DELETE 顶成 500。已有他人提交的作业改派给执行者，不连带删他人提交。
+   * 顺序要点：①FOR UPDATE 锁行+角色校验最先（否则 purge 提交后删号被角色守卫挡下会白删内容）；
+   * ②taggings 先于内容删除（子查询要靠内容行定位 targetId，反了会留孤儿污染标签计数）；
+   * ③作业改派先于作业删除；④本人提交显式先删（消除附件级联 vs 提交 RESTRICT 的顺序不确定性）。
+   */
+  async deleteById(id: string, reassignedPublisherTo: string): Promise<UserRow | null> {
+    return db.transaction(async (tx) => {
+      const [locked] = await tx
+        .select({ role: users.role })
+        .from(users)
+        .where(eq(users.id, id))
+        .for('update');
+      if (!locked || (locked.role !== 'MEMBER' && locked.role !== 'VISITOR')) {
+        return null;
+      }
+
+      // taggings 无多态 FK，必须显式清理（须在内容行删除前，子查询要能命中目标）
+      await tx.delete(taggings).where(
+        or(
+          and(
+            eq(taggings.targetType, 'ARTICLE'),
+            inArray(taggings.targetId, tx.select({ id: articles.id }).from(articles).where(eq(articles.authorId, id))),
+          ),
+          and(
+            eq(taggings.targetType, 'ISSUE'),
+            inArray(taggings.targetId, tx.select({ id: issues.id }).from(issues).where(eq(issues.authorId, id))),
+          ),
+          and(
+            eq(taggings.targetType, 'RESOURCE'),
+            inArray(taggings.targetId, tx.select({ id: resources.id }).from(resources).where(eq(resources.creatorId, id))),
+          ),
+        ),
+      );
+
+      // 名下内容硬删（含回收站软删行）
+      await tx.delete(articles).where(eq(articles.authorId, id));
+      await tx.delete(announcements).where(eq(announcements.authorId, id));
+      await tx.delete(resources).where(eq(resources.creatorId, id));
+
+      // 作业：已有他人提交的改派给执行剔除的管理员，不连带删他人提交
+      await tx
+        .update(assignments)
+        .set({ publisherId: reassignedPublisherTo })
+        .where(
+          and(
+            eq(assignments.publisherId, id),
+            inArray(
+              assignments.id,
+              tx
+                .select({ id: assignmentSubmissions.assignmentId })
+                .from(assignmentSubmissions)
+                .where(ne(assignmentSubmissions.submitterId, id)),
+            ),
+          ),
+        );
+      // 无他人提交的作业连同其提交一并删除
+      await tx.delete(assignments).where(eq(assignments.publisherId, id));
+
+      // 本人提交显式先删：避免附件（uploader 级联）与提交（attachment RESTRICT）在删号级联中的顺序不确定性
+      await tx.delete(assignmentSubmissions).where(eq(assignmentSubmissions.submitterId, id));
+
+      const rows = await tx
+        .delete(users)
+        .where(and(eq(users.id, id), inArray(users.role, ['MEMBER', 'VISITOR'])))
+        .returning();
+      return rows[0] ?? null;
+    });
   }
 
   async countByRole(): Promise<Record<string, number>> {

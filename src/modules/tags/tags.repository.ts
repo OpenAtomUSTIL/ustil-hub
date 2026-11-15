@@ -2,7 +2,7 @@ import { type DatabaseTransaction } from '../../db';
 import { Injectable } from '@nestjs/common';
 import { asc, desc, eq, inArray, sql, and, isNull, or } from 'drizzle-orm';
 import { db } from '../../db';
-import { TagTargetType, articles, issues, resources, taggings, tags } from '../../db/schema';
+import { TagTargetType, articles, resources, taggings, tags } from '../../db/schema';
 
 export type TagRow = typeof tags.$inferSelect;
 
@@ -87,21 +87,5 @@ export class TagsRepository {
     await db
       .delete(taggings)
       .where(and(eq(taggings.targetType, targetType), eq(taggings.targetId, targetId)));
-  }
-
-  // 剔除学员级联删除其 issues 时，同步清理对应 taggings（无多态 FK，必须显式清理）。
-  // 这里对 issues 表的引用只是删除条件的关联子查询，写入/删除对象均为 taggings 自身。
-  async deleteIssueTaggingsOfAuthor(authorId: string): Promise<void> {
-    await db
-      .delete(taggings)
-      .where(
-        and(
-          eq(taggings.targetType, 'ISSUE'),
-          inArray(
-            taggings.targetId,
-            db.select({ id: issues.id }).from(issues).where(eq(issues.authorId, authorId)),
-          ),
-        ),
-      );
   }
 }

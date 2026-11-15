@@ -12,7 +12,6 @@ describe('TagsService', () => {
     findNamesByTargets: jest.fn(),
     syncTaggings: jest.fn(),
     deleteTaggings: jest.fn(),
-    deleteIssueTaggingsOfAuthor: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -66,11 +65,8 @@ describe('TagsService', () => {
     ]);
   });
 
-  it('cleanup 与 cleanupIssuesOfAuthor 透传仓库', async () => {
+  it('cleanup 透传仓库', async () => {
     await service.cleanup('ISSUE', 'i-1');
     expect(repository.deleteTaggings).toHaveBeenCalledWith('ISSUE', 'i-1');
-
-    await service.cleanupIssuesOfAuthor('u-1');
-    expect(repository.deleteIssueTaggingsOfAuthor).toHaveBeenCalledWith('u-1');
   });
 });

@@ -5,7 +5,6 @@ import { AuditModule } from '../audit/audit.module';
 import { CaptchaModule } from '../captcha/captcha.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { StorageModule } from '../storage/storage.module';
-import { TagsModule } from '../tags/tags.module';
 import { AdminOnlineUsersController } from './admin-online-users.controller';
 import { LastSeenInterceptor } from './last-seen.interceptor';
 import { PresenceService } from './presence.service';
@@ -15,7 +14,7 @@ import { UsersRepository } from './users.repository';
 import { UsersService } from './users.service';
 
 @Module({
-  imports: [StorageModule, NotificationsModule, forwardRef(() => AuditModule), CaptchaModule, TagsModule],
+  imports: [StorageModule, NotificationsModule, forwardRef(() => AuditModule), CaptchaModule],
   controllers: [UsersController, AdminOnlineUsersController],
   providers: [
     UsersRepository,

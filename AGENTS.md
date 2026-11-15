@@ -215,7 +215,7 @@ controller → service → repository(db)
 - 被封禁账号（`users.status = 'BANNED'`）`MUST` 在 `JwtAuthGuard` 里直接 403，不进入业务逻辑。
 - `ADMIN` 公共账号 `MUST NOT` 被改角色/删除/封禁，service 层拦截（403）。
 - `VISITOR` `MUST NOT` 查阅/提交作业：作业列表/详情/提交接口对其 403，前端仅隐藏入口。
-- 剔除学员 = 硬删 `MEMBER`/`VISITOR` 账号并级联其 issues/replies；`ALUMNI` 及以上不可被剔除。
+- 剔除学员 = 硬删 `MEMBER`/`VISITOR` 账号并级联其 issues/replies，其名下文章/公告/资料/作业（含回收站软删行）随账号一并硬删（单事务 purge，先清 taggings 再删内容）；已有他人提交的作业改派给操作者，不连带删他人提交；`ALUMNI` 及以上不可被剔除。
 
 ## 11. 认证与密码
 

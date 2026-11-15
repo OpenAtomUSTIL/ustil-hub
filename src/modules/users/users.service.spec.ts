@@ -11,7 +11,6 @@ import { UserStatus } from '../../db/schema';
 import { AuditLogService } from '../audit/audit-log.service';
 import { CaptchaService } from '../captcha/captcha.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { TagsService } from '../tags/tags.service';
 import { UploadsService } from '../storage/uploads.service';
 import { hashPassword } from '../auth/password';
 import { UsersRepository, UserRow } from './users.repository';
@@ -99,10 +98,7 @@ describe('UsersService', () => {
   const auditLogService = {
     record: jest.fn(),
   };
-  const tagsService = {
-    cleanupIssuesOfAuthor: jest.fn(),
-    cleanup: jest.fn(),
-  };
+  // v8.0：剔除 purge 并入 deleteById 事务，UsersService 不再依赖 TagsService
   // v6.0：changeIdentifier 起手先过图形验证码，单测直接打桩放行
   const captchaService = {
     validate: jest.fn(),
@@ -129,7 +125,6 @@ describe('UsersService', () => {
         { provide: UploadsService, useValue: uploadsService },
         { provide: NotificationsService, useValue: notificationsService },
         { provide: AuditLogService, useValue: auditLogService },
-        { provide: TagsService, useValue: tagsService },
         { provide: CaptchaService, useValue: captchaService },
         { provide: REFRESH_TOKEN_STORE, useValue: refreshStore },
       ],
@@ -220,7 +215,7 @@ describe('UsersService', () => {
 
     await service.removeByAdmin('01890a5d-ac96-7000-8000-000000000001', actor);
     expect(refreshStore.revokeAll).toHaveBeenCalledWith('01890a5d-ac96-7000-8000-000000000001');
-    expect(usersRepository.deleteById).toHaveBeenCalled();
+    expect(usersRepository.deleteById).toHaveBeenCalledWith('01890a5d-ac96-7000-8000-000000000001', 'admin-actor');
 
     usersRepository.findById.mockResolvedValue(row({ role: Role.ALUMNI }));
     await expect(
@@ -296,13 +291,13 @@ describe('UsersService', () => {
     );
   });
 
-  it('剔除：清理 issue taggings 并写审计', async () => {
+  it('剔除：purge 交给 deleteById 事务，service 写审计', async () => {
     usersRepository.findById.mockResolvedValue(row({ role: Role.VISITOR }));
     usersRepository.deleteById.mockResolvedValue(row({ role: Role.VISITOR }));
 
     await service.removeByAdmin('01890a5d-ac96-7000-8000-000000000001', actor);
 
-    expect(tagsService.cleanupIssuesOfAuthor).toHaveBeenCalledWith('01890a5d-ac96-7000-8000-000000000001');
+    expect(usersRepository.deleteById).toHaveBeenCalledWith('01890a5d-ac96-7000-8000-000000000001', 'admin-actor');
     expect(auditLogService.record).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'user.remove' }),
     );

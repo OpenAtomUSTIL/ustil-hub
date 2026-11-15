@@ -12,7 +12,6 @@ import { UserStatus } from '../../db/schema';
 import { AuditLogService } from '../audit/audit-log.service';
 import { CaptchaService } from '../captcha/captcha.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { TagsService } from '../tags/tags.service';
 import { UploadsService, UploadedFileInput } from '../storage/uploads.service';
 import { ChangeIdentifierDto } from './dto/change-identifier.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
@@ -49,7 +48,6 @@ export class UsersService {
     private readonly uploadsService: UploadsService,
     private readonly notificationsService: NotificationsService,
     private readonly auditLogService: AuditLogService,
-    private readonly tagsService: TagsService,
     private readonly captchaService: CaptchaService,
     @Inject(REFRESH_TOKEN_STORE) private readonly refreshStore: RefreshTokenStore,
   ) {}
@@ -408,9 +406,8 @@ export class UsersService {
       throw new ForbiddenException('仅可剔除学习成员或临时访客');
     }
     await this.refreshStore.revokeAll(row.id);
-    // 级联删除其 issues 前显式清理对应 taggings（无多态 FK）
-    await this.tagsService.cleanupIssuesOfAuthor(row.id);
-    const deleted = await this.usersRepository.deleteById(row.id);
+    // taggings/名下内容清理已并入 deleteById 单事务 purge（v8.0 修复 RESTRICT 500）
+    const deleted = await this.usersRepository.deleteById(row.id, actor.id);
     if (!deleted) throw new ConflictException('用户角色已变化，请刷新后重试');
     await this.auditLogService.record({
       actor,

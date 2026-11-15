@@ -45,10 +45,6 @@ export class TagsService {
     await this.tagsRepository.deleteTaggings(targetType, targetId);
   }
 
-  async cleanupIssuesOfAuthor(authorId: string): Promise<void> {
-    await this.tagsRepository.deleteIssueTaggingsOfAuthor(authorId);
-  }
-
   async getNamesByTargets(
     targetType: TagTargetType,
     targetIds: string[],

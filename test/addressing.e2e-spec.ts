@@ -111,6 +111,7 @@ describe('解析式寻址（v6.0 e2e）', () => {
     ['user-admin', row({ id: 'user-admin', role: Role.ADMIN, username: 'admin' })],
     ['user-wheel', row({ id: 'user-wheel', role: Role.WHEEL, username: 'wheel' })],
     ['user-member', row({ id: 'user-member', role: Role.MEMBER, username: 'member' })],
+    ['user-visitor', row({ id: 'user-visitor', role: Role.VISITOR, username: 'visitor' })],
   ]);
 
   const usersRepository = {
@@ -373,7 +374,7 @@ describe('解析式寻址（v6.0 e2e）', () => {
       .delete('/admin/users/a@example.com')
       .set('Cookie', [`access_token=${admin}`])
       .expect(204);
-    expect(usersRepository.deleteById).toHaveBeenCalledWith(TARGET_ID);
+    expect(usersRepository.deleteById).toHaveBeenCalledWith(TARGET_ID, 'user-admin');
   });
 
   it('封禁 / 解封：email 寻址成功', async () => {
@@ -429,4 +430,12 @@ describe('解析式寻址（v6.0 e2e）', () => {
       .expect(200);
     expect(usersRepository.updateRole).toHaveBeenCalledWith(UUID_TARGET_ID, Role.ALUMNI, Role.MEMBER);
   });
+  it('直接请求发布接口：未登录 401，访客伪造正文中的角色也只能得到 403', async () => {
+    await request(app.getHttpServer()).post('/articles')
+      .send({ title: '绕过页面', content: '正文' }).expect(401);
+    await request(app.getHttpServer()).post('/articles')
+      .set('Cookie', [`access_token=${tokenFor('user-visitor')}`])
+      .send({ title: '绕过页面', content: '正文', role: 'ADMIN' }).expect(403);
+  });
+
 });
