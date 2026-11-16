@@ -1,6 +1,6 @@
 import { isValidStorageKey } from '../storage/storage.types';
 import { Injectable } from '@nestjs/common';
-import { and, desc, eq, gte, ilike, inArray, isNull, like, lt, ne, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, ilike, inArray, isNotNull, isNull, like, lt, ne, or, sql } from 'drizzle-orm';
 import { db, Database, type DatabaseTransaction } from '../../db';
 import {
   announcements,
@@ -83,6 +83,18 @@ export class UsersRepository {
       // 当前用户名与历史用户名跨两张表，共用事务锁保护名称分配。
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext('ustil:usernames'))`);
       return operation(tx);
+    });
+  }
+
+  /** 加密字段的读取、cryptoId 初始化和写入必须持有同一用户行锁。 */
+  async withUserLock<T>(
+    id: string,
+    operation: (row: UserRow | null, tx: DatabaseTransaction) => Promise<T>,
+    connection: Database | DatabaseTransaction = db,
+  ): Promise<T> {
+    return connection.transaction(async (tx) => {
+      const [row] = await tx.select().from(users).where(eq(users.id, id)).for('update');
+      return operation(row ?? null, tx);
     });
   }
 
@@ -173,6 +185,18 @@ export class UsersRepository {
     return db.select().from(users).where(inArray(users.id, ids));
   }
 
+  /** 注册占用检查：同时覆盖 HMAC 命中和升级后尚未回填查找列的账号。 */
+  async findIdentifierCandidates(
+    emailHmac: string | null,
+    phoneHmac: string | null,
+    connection: Database | DatabaseTransaction = db,
+  ): Promise<UserRow[]> {
+    return connection.select().from(users).where(or(
+      emailHmac ? or(eq(users.emailHmac, emailHmac), and(isNull(users.emailHmac), isNotNull(users.email))) : undefined,
+      phoneHmac ? or(eq(users.phoneHmac, phoneHmac), and(isNull(users.phoneHmac), isNotNull(users.phone))) : undefined,
+    ));
+  }
+
   /** 精确查找（v10.0）：email/phone 列为信封 token，查询走确定性 HMAC 查找列 */
   async findByEmailHmacOrPhoneHmac(emailHmac: string, phoneHmac: string): Promise<UserRow | null> {
     const rows = await db
@@ -223,8 +247,9 @@ export class UsersRepository {
       phoneHmac: string | null;
       cryptoId?: string;
     },
+    connection: Database | DatabaseTransaction = db,
   ): Promise<UserRow | null> {
-    const rows = await db
+    const rows = await connection
       .update(users)
       .set(patch)
       .where(eq(users.id, id))
@@ -570,8 +595,9 @@ export class UsersRepository {
       socials?: (string | null)[] | null;
       cryptoId?: string;
     },
+    connection: Database | DatabaseTransaction = db,
   ): Promise<UserRow | null> {
-    const rows = await db
+    const rows = await connection
       .update(users)
       .set({
         ...patch,

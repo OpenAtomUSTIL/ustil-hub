@@ -1,5 +1,5 @@
-import { Database } from '../../db';
-import { Inject, Injectable, Logger, BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { Database, type DatabaseTransaction } from '../../db';
+import { Inject, Injectable, Logger, BadRequestException, ConflictException, ForbiddenException, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { verify } from 'argon2';
 import { isEmail, isMobilePhone } from 'class-validator';
 import { Role } from '../../common/decorators/roles.decorator';
@@ -96,6 +96,36 @@ export class UsersService {
     return this.usersRepository.adminFileSource(connection, keyword);
   }
 
+  private async ensureIdentifierAvailable(
+    email: string | null,
+    phone: string | null,
+    connection: DatabaseTransaction,
+    excludeId?: string,
+  ): Promise<void> {
+    const emailHmac = email ? this.crypto.hmac(email) : null;
+    const phoneHmac = phone ? this.crypto.hmac(phone) : null;
+    if (!emailHmac && !phoneHmac) return;
+    const candidates = await this.usersRepository.findIdentifierCandidates(emailHmac, phoneHmac, connection);
+    for (const row of candidates) {
+      if (row.id === excludeId) continue;
+      for (const type of ['email', 'phone'] as const) {
+        const value = type === 'email' ? email : phone;
+        const hash = type === 'email' ? emailHmac : phoneHmac;
+        if (!value || !row[type]) continue;
+        const storedHash = type === 'email' ? row.emailHmac : row.phoneHmac;
+        if (storedHash) {
+          if (storedHash === hash) throw new ConflictException('该邮箱或手机号已被注册');
+          continue;
+        }
+        // 旧明文与缺失 HMAC 的有效信封均要检查，不能仅依赖可空唯一索引。
+        const stored = this.crypto.open(type, row[type], row.cryptoId ?? '')
+          ?? ((type === 'email' ? isEmail(row[type]!.trim()) : isMobilePhone(row[type]!.trim(), 'zh-CN')) ? row[type] : null);
+        if (!stored) throw new ServiceUnavailableException('账号资料校验暂不可用，请稍后重试');
+        if (normalizeIdentifier(stored) === value) throw new ConflictException('该邮箱或手机号已被注册');
+      }
+    }
+  }
+
   async createUser(input: {
     email?: string | null;
     phone?: string | null;
@@ -106,13 +136,14 @@ export class UsersService {
   }): Promise<UserSelf> {
     try {
       return await this.usersRepository.withUsernameLock(async (tx) => {
+        const email = input.email ? normalizeIdentifier(input.email) : null;
+        const phone = input.phone ? normalizeIdentifier(input.phone) : null;
+        await this.ensureIdentifierAvailable(email, phone, tx);
         const username = await uniqueUsername(input.nickname, (u) =>
           this.usersRepository.usernameExists(u, tx),
         );
         // 信封加密（v10.0）：每用户 cryptoId 参与密钥派生；标识列存 token，唯一性/精确查走 HMAC 列
         const cryptoId = this.crypto.newCryptoId();
-        const email = input.email ? normalizeIdentifier(input.email) : null;
-        const phone = input.phone ?? null;
         const row = await this.usersRepository.insert({
           email: this.crypto.seal('email', email, cryptoId),
           phone: this.crypto.seal('phone', phone, cryptoId),
@@ -245,25 +276,25 @@ export class UsersService {
     } else if (!isMobilePhone(value, 'zh-CN')) {
       throw new BadRequestException('手机号格式错误');
     }
-    // 占用检查走 HMAC 查找列（v10.0）：邮箱小写取 hmac、手机号原样取 hmac
     const hmac = this.crypto.hmac(value);
-    const existing =
-      dto.type === 'email'
-        ? await this.usersRepository.findByEmailHmac(hmac)
-        : await this.usersRepository.findByPhoneHmac(hmac);
-    if (existing && existing.id !== id) {
-      throw new ConflictException('该邮箱或手机号已被占用');
-    }
-    // 一个账号只绑定一个标识：换绑时清空另一种标识（含 HMAC 查找列）；新值 seal 信封 token 入库
-    const cryptoId = row.cryptoId ?? this.crypto.newCryptoId();
     let updated: UserRow | null;
     try {
-      updated = await this.usersRepository.updateIdentifier(id, {
-        email: dto.type === 'email' ? this.crypto.seal('email', value, cryptoId) : null,
-        phone: dto.type === 'phone' ? this.crypto.seal('phone', value, cryptoId) : null,
-        emailHmac: dto.type === 'email' ? hmac : null,
-        phoneHmac: dto.type === 'phone' ? hmac : null,
-        ...(row.cryptoId ? {} : { cryptoId }),
+      // 注册与换绑共用同一事务锁，避免旧账号缺少 HMAC 时被并发占用。
+      updated = await this.usersRepository.withUsernameLock(async (tx) => {
+        await this.ensureIdentifierAvailable(dto.type === 'email' ? value : null, dto.type === 'phone' ? value : null, tx, id);
+        return this.usersRepository.withUserLock(id, async (current, lockedTx) => {
+          if (!current) throw new NotFoundException('用户不存在');
+          if (current.role === Role.ADMIN) throw new ForbiddenException('管理员账号初始化后不可修改');
+          if (current.passwordHash !== row.passwordHash) throw new BadRequestException('密码已变更，请重试');
+          const cryptoId = current.cryptoId ?? this.crypto.newCryptoId();
+          return this.usersRepository.updateIdentifier(id, {
+            email: dto.type === 'email' ? this.crypto.seal('email', value, cryptoId) : null,
+            phone: dto.type === 'phone' ? this.crypto.seal('phone', value, cryptoId) : null,
+            emailHmac: dto.type === 'email' ? hmac : null,
+            phoneHmac: dto.type === 'phone' ? hmac : null,
+            ...(current.cryptoId ? {} : { cryptoId }),
+          }, lockedTx);
+        }, tx);
       });
     } catch (error) {
       if (isUniqueViolation(error)) throw new ConflictException('该邮箱或手机号已被占用');
@@ -715,31 +746,32 @@ export class UsersService {
       }
     }
     // 信封加密（v10.0）：资料字段共用 'profile' 用途域，socials 逐条 'social'（空串 seal 为 null 条目，读取侧过滤）
-    const row = await this.usersRepository.findById(userId);
-    if (!row) {
-      throw new NotFoundException('用户不存在');
-    }
-    const cryptoId = row.cryptoId ?? this.crypto.newCryptoId();
-    const sealProfile = (value: string | null | undefined): string | null | undefined =>
-      value === undefined ? undefined : this.crypto.seal('profile', value, cryptoId);
-    const updated = await this.usersRepository.updateProfilePage(userId, {
-      bio: sealProfile(dto.bio),
-      profileReadme: sealProfile(dto.profileReadme),
-      pinnedItems: dto.pinnedItems,
-      company: sealProfile(dto.company),
-      location: sealProfile(dto.location),
-      link: sealProfile(dto.link),
-      socials:
-        dto.socials === undefined
-          ? undefined
-          : dto.socials === null
-            ? null
-            : dto.socials.map((item) => this.crypto.seal('social', item, cryptoId)),
-      ...(row.cryptoId ? {} : { cryptoId }),
+    await this.usersRepository.withUserLock(userId, async (row, tx) => {
+      if (!row) {
+        throw new NotFoundException('用户不存在');
+      }
+      const cryptoId = row.cryptoId ?? this.crypto.newCryptoId();
+      const sealProfile = (value: string | null | undefined): string | null | undefined =>
+        value === undefined ? undefined : this.crypto.seal('profile', value, cryptoId);
+      const updated = await this.usersRepository.updateProfilePage(userId, {
+        bio: sealProfile(dto.bio),
+        profileReadme: sealProfile(dto.profileReadme),
+        pinnedItems: dto.pinnedItems,
+        company: sealProfile(dto.company),
+        location: sealProfile(dto.location),
+        link: sealProfile(dto.link),
+        socials:
+          dto.socials === undefined
+            ? undefined
+            : dto.socials === null
+              ? null
+              : dto.socials.map((item) => this.crypto.seal('social', item, cryptoId)),
+        ...(row.cryptoId ? {} : { cryptoId }),
+      }, tx);
+      if (!updated) {
+        throw new NotFoundException('用户不存在');
+      }
     });
-    if (!updated) {
-      throw new NotFoundException('用户不存在');
-    }
   }
 
   async getActivity(idOrUsername: string, viewer: CurrentAuthUser): Promise<ActivityView> {

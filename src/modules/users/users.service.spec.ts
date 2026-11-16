@@ -60,6 +60,8 @@ describe('UsersService', () => {
 
   const usersRepository = {
     withUsernameLock: jest.fn(),
+    withUserLock: jest.fn(),
+    findIdentifierCandidates: jest.fn(),
     insert: jest.fn(),
     findById: jest.fn(),
     findByUsername: jest.fn(),
@@ -124,7 +126,10 @@ describe('UsersService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    usersRepository.findIdentifierCandidates.mockReset().mockResolvedValue([]);
+    usersRepository.insert.mockReset();
     usersRepository.withUsernameLock.mockImplementation((operation) => operation(transaction));
+    usersRepository.withUserLock.mockImplementation(async (id, operation) => operation(await usersRepository.findById(id), transaction));
     usersRepository.findByIdOrUsername.mockImplementation((v: string) =>
       usersRepository.findById(v),
     );
@@ -183,6 +188,51 @@ describe('UsersService', () => {
     expect(usersRepository.updateIdentifier).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { email: ' A@Example.com ', emailHmac: null, cryptoId: null },
+    { email: 'v1.test.a@example.com', emailHmac: null, cryptoId: 'a'.repeat(32) },
+    { email: 'v1.test.a@example.com', emailHmac: 'h:a@example.com', cryptoId: 'a'.repeat(32) },
+  ])('注册拒绝相同邮箱，包括尚未回填的账号：%j', async (existing) => {
+    usersRepository.findIdentifierCandidates.mockResolvedValue([row(existing)]);
+    await expect(service.createUser({ email: ' A@EXAMPLE.COM ', passwordHash: 'hash', nickname: 'new' }))
+      .rejects.toThrow(ConflictException);
+    expect(usersRepository.insert).not.toHaveBeenCalled();
+    expect(usersRepository.findIdentifierCandidates).toHaveBeenCalledWith('h:a@example.com', null, transaction);
+  });
+
+  it('并发注册同一邮箱仅允许一次成功', async () => {
+    const saved: UserRow[] = [];
+    let queue = Promise.resolve();
+    usersRepository.withUsernameLock.mockImplementation((operation) => {
+      const result = queue.then(() => operation(transaction));
+      queue = result.then(() => undefined, () => undefined);
+      return result;
+    });
+    usersRepository.findIdentifierCandidates.mockImplementation(async () => saved);
+    usersRepository.insert.mockImplementation(async (input) => {
+      const created = row(input);
+      saved.push(created);
+      return created;
+    });
+    const results = await Promise.allSettled(['a@example.com', ' A@EXAMPLE.COM '].map((email) =>
+      service.createUser({ email, passwordHash: 'hash', nickname: 'new' })));
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    expect(usersRepository.insert).toHaveBeenCalledTimes(1);
+  });
+
+  it('缺失 HMAC 的手机号同样不能重复注册', async () => {
+    usersRepository.findIdentifierCandidates.mockResolvedValue([row({ email: null, phone: '13800138000', phoneHmac: null, cryptoId: null })]);
+    await expect(service.createUser({ phone: '13800138000', passwordHash: 'hash', nickname: 'new' })).rejects.toThrow(ConflictException);
+    expect(usersRepository.insert).not.toHaveBeenCalled();
+  });
+
+  it('未回填的不同邮箱不应阻止注册', async () => {
+    usersRepository.findIdentifierCandidates.mockResolvedValue([row({ email: 'other@example.com', emailHmac: null, cryptoId: null })]);
+    usersRepository.insert.mockResolvedValue(row());
+    await expect(service.createUser({ email: 'a@example.com', passwordHash: 'hash', nickname: 'new' })).resolves.toBeDefined();
+  });
+
   it('createUser：标识 seal 入库并写 cryptoId 与 HMAC 查找列（v10.0）', async () => {
     usersRepository.insert.mockResolvedValue(row());
 
@@ -236,6 +286,13 @@ describe('UsersService', () => {
     expect(record?.email).toBe('a@example.com');
   });
 
+  it('换绑不能占用尚未回填的旧邮箱', async () => {
+    usersRepository.findById.mockResolvedValue(row({ passwordHash: await hashPassword('password123') }));
+    usersRepository.findIdentifierCandidates.mockResolvedValue([row({ id: 'other-user', email: 'old@example.com', emailHmac: null, cryptoId: null })]);
+    await expect(service.changeIdentifier(row().id, { captchaId: 'captcha-1', captchaCode: 'ABCDE', type: 'email', value: ' OLD@example.com ', password: 'password123' })).rejects.toThrow(ConflictException);
+    expect(usersRepository.updateIdentifier).not.toHaveBeenCalled();
+  });
+
   it('换绑邮箱：新值 seal + HMAC 更新，另一标识与其 HMAC 同步清空（v10.0）', async () => {
     usersRepository.findById.mockResolvedValue(
       row({ passwordHash: await hashPassword('password123') }),
@@ -259,6 +316,7 @@ describe('UsersService', () => {
         emailHmac: 'h:new@example.com',
         phoneHmac: null,
       },
+      transaction,
     );
   });
 
@@ -526,7 +584,7 @@ describe('UsersService', () => {
       location: 'v1.test.辽宁沈阳',
       link: 'v1.test.geminimortal.cn',
       socials: ['v1.test.https://github.com/GeminiMortal', null],
-    });
+    }, transaction);
   });
 
   it('置顶：超过 6 项或重复返回 400', async () => {
@@ -585,7 +643,7 @@ describe('UsersService', () => {
       location: undefined,
       link: undefined,
       socials: undefined,
-    });
+    }, transaction);
   });
 
   it('活跃度：VISITOR 访他人 403', async () => {
@@ -841,7 +899,9 @@ describe('CryptoService 信封往返与 null 直通（v10.0）', () => {
     if (!token) {
       throw new Error('seal 不应返回 null');
     }
-    const corrupted = token.slice(0, -1) + (token.endsWith('a') ? 'b' : 'a');
+    const parts = token.split('.');
+    parts[3] = (parts[3][0] === 'A' ? 'B' : 'A') + parts[3].slice(1);
+    const corrupted = parts.join('.');
     expect(crypto.open('phone', token, cryptoId)).toBeNull();
     expect(crypto.open('email', token, crypto.newCryptoId())).toBeNull();
     expect(crypto.open('email', corrupted, cryptoId)).toBeNull();
@@ -860,5 +920,52 @@ describe('UpdateProfilePageDto.socials 校验（v10.0 修复）', () => {
     const dto = plainToInstance(UpdateProfilePageDto, { socials: ['  a  ', '', '   ', 'b'] });
     expect(dto.socials).toEqual(['a', 'b']);
     expect(await validate(dto)).toEqual([]);
+  });
+});
+
+
+describe('用户加密标识并发回归', () => {
+  it('换绑等待期间资料已初始化 cryptoId，仍保留两边的可解密数据', async () => {
+    const crypto = new CryptoService(Buffer.alloc(32, 7).toString('base64'));
+    const initial = row({ cryptoId: null, passwordHash: await hashPassword('Password123') });
+    const live = { ...initial };
+    const id = crypto.newCryptoId();
+    const repository = {
+      findById: async () => ({ ...initial }),
+      findIdentifierCandidates: async () => [],
+      withUsernameLock: async (fn: (tx: typeof transaction) => Promise<unknown>) => {
+        live.cryptoId = id;
+        live.bio = crypto.seal('profile', 'saved bio', id);
+        return fn(transaction);
+      },
+      withUserLock: async (_id: string, fn: (row: UserRow, tx: typeof transaction) => Promise<unknown>) => fn({ ...live }, transaction),
+      updateIdentifier: async (_id: string, patch: Partial<UserRow>) => Object.assign(live, patch),
+    };
+    const service = new UsersService(repository as unknown as UsersRepository, crypto, {} as UploadsService, {} as NotificationsService, {} as AuditLogService, { validate: async () => {} } as unknown as CaptchaService, {} as never);
+    await service.changeIdentifier(live.id, { type: 'email', value: 'new@example.com', password: 'Password123', captchaId: 'c', captchaCode: 'c' });
+    expect(live.cryptoId).toBe(id);
+    expect(crypto.open('profile', live.bio, id)).toBe('saved bio');
+    expect(crypto.open('email', live.email, id)).toBe('new@example.com');
+  });
+
+  it('两个并发资料保存共用第一次初始化的 cryptoId', async () => {
+    const crypto = new CryptoService(Buffer.alloc(32, 7).toString('base64'));
+    const live = row({ cryptoId: null });
+    let queue = Promise.resolve();
+    const repository = {
+      withUserLock: (_id: string, fn: (row: UserRow, tx: typeof transaction) => Promise<unknown>) => {
+        const result = queue.then(() => fn({ ...live }, transaction));
+        queue = result.then(() => undefined, () => undefined);
+        return result;
+      },
+      updateProfilePage: async (_id: string, patch: Partial<UserRow>) => {
+        for (const [key, value] of Object.entries(patch)) if (value !== undefined) Object.assign(live, { [key]: value });
+        return { ...live };
+      },
+    };
+    const service = new UsersService(repository as unknown as UsersRepository, crypto, {} as UploadsService, {} as NotificationsService, {} as AuditLogService, {} as CaptchaService, {} as never);
+    await Promise.all([service.updateProfilePage(live.id, { bio: 'bio' }), service.updateProfilePage(live.id, { company: 'company' })]);
+    expect(crypto.open('profile', live.bio, live.cryptoId!)).toBe('bio');
+    expect(crypto.open('profile', live.company, live.cryptoId!)).toBe('company');
   });
 });

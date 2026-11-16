@@ -76,8 +76,10 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
 
   const usersRepository = {
     withUsernameLock: jest.fn(),
+    withUserLock: jest.fn(),
     usernameExists: jest.fn(),
     insert: jest.fn(),
+    findIdentifierCandidates: jest.fn(),
     findById: jest.fn(),
     findByUsername: jest.fn(),
     findByEmailHmacOrPhoneHmac: jest.fn(),
@@ -209,12 +211,14 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
     jest.clearAllMocks();
     fakeRedis.clear();
     usersRepository.withUsernameLock.mockImplementation((operation) => operation({}));
+    usersRepository.withUserLock.mockImplementation(async (id, operation) => operation(await usersRepository.findById(id), {}));
     usersRepository.usernameExists.mockResolvedValue(false);
     usersRepository.insert.mockResolvedValue(row());
     usersRepository.findById.mockResolvedValue(row());
     usersRepository.findByUsername.mockResolvedValue(null);
     usersRepository.findByEmailHmacOrPhoneHmac.mockResolvedValue(null);
     usersRepository.findByEmailHmac.mockResolvedValue(null);
+    usersRepository.findIdentifierCandidates.mockResolvedValue([]);
     usersRepository.findByPhoneHmac.mockResolvedValue(null);
   });
 
@@ -241,6 +245,21 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
       expect.anything(),
     );
     expect(res.body.role).toBe(Role.VISITOR);
+  });
+
+  it.each(['a@example.com', ' A@Example.com '])('旧账号尚未回填也拒绝重复邮箱注册：%s', async (email) => {
+    usersRepository.findIdentifierCandidates.mockResolvedValue([{ ...row(), email, emailHmac: null, cryptoId: null }]);
+    const res = await request(app.getHttpServer()).post('/auth/register')
+      .send({ ...registerBody, ...(await captchaOf()) }).expect(409);
+    expect(res.body.message).toBe('该邮箱或手机号已被注册');
+    expect(usersRepository.insert).not.toHaveBeenCalled();
+  });
+
+  it('缺失 HMAC 的加密邮箱也不能重复注册', async () => {
+    usersRepository.findIdentifierCandidates.mockResolvedValue([row({ emailHmac: null })]);
+    await request(app.getHttpServer()).post('/auth/register')
+      .send({ ...registerBody, ...(await captchaOf()) }).expect(409);
+    expect(usersRepository.insert).not.toHaveBeenCalled();
   });
 
   it('有码注册：核销邀请码并创建 MEMBER 账号', async () => {
@@ -507,6 +526,7 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
         phoneHmac: null,
         emailHmac: testCrypto.hmac('new@example.com'),
       }),
+      expect.anything(),
     );
     // 库内为信封 token（非明文）；接口响应仍是明文
     const patch = usersRepository.updateIdentifier.mock.calls[0][1];
