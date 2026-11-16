@@ -249,10 +249,14 @@ TagView = { id: string; name: string; count: number }
   {
     "bio": "短简介，≤100 字符",
     "profileReadme": "个人介绍（长文），≤10000 字符",
-    "pinnedItems": [ { "type": "ARTICLE | ISSUE | RESOURCE", "id": "uuid" } ]
+    "pinnedItems": [ { "type": "ARTICLE | ISSUE | RESOURCE", "id": "uuid" } ],
+    "company": "公司/学校，≤100 字符",
+    "location": "所在地，≤100 字符",
+    "link": "个人链接，≤200 字符，可裸域名",
+    "socials": [ "社交账户链接，≤4 条、每条 ≤200 字符" ]
   }
   ```
-- 约束：`pinnedItems` ≤6 项、不得重复、目标必须存在且**属于本人**（否则 400）；省略表示不动，`[]` 清空
+- 约束：`pinnedItems` ≤6 项、不得重复、目标必须存在且**属于本人**（否则 400）；省略表示不动，`[]` 清空；`company`/`location` ≤100、`link` ≤200、`socials` ≤4 条且每条 ≤200（空串条目自动剔除），链接宽松校验（可裸域名，展示时前端补 `https://`）
 - 成功：`200`（空响应）
 - 失败：`400` 超长/超量/重复/不属于本人；`404` 用户不存在
 
@@ -283,6 +287,10 @@ TagView = { id: string; name: string; count: number }
     id, username, nickname, avatarUrl, role,
     bio: string | null,
     profileReadme: string | null,
+    company: string | null,                            // 公司/学校（v9.0 公开资料字段）
+    location: string | null,
+    link: string | null,
+    socials: string[],
     createdAt,
     stats: { articles, issues, replies, submissions },   // 聚合计数（软删不计）
     topTags: { name: string, count: number }[],          // 至多 10 项

@@ -588,6 +588,10 @@ export class UsersService {
       role: row.role as Role,
       bio: row.bio,
       profileReadme: row.profileReadme,
+      company: row.company,
+      location: row.location,
+      link: row.link,
+      socials: row.socials ?? [],
       createdAt: row.createdAt.toISOString(),
       stats,
       topTags,
@@ -610,6 +614,10 @@ export class UsersService {
       bio?: string | null;
       profileReadme?: string | null;
       pinnedItems?: { type: string; id: string }[];
+      company?: string | null;
+      location?: string | null;
+      link?: string | null;
+      socials?: string[] | null;
     },
   ): Promise<void> {
     if (dto.bio !== undefined && dto.bio !== null && dto.bio.length > 100) {
@@ -617,6 +625,26 @@ export class UsersService {
     }
     if (dto.profileReadme !== undefined && dto.profileReadme !== null && dto.profileReadme.length > 10000) {
       throw new BadRequestException('个人介绍不能超过 10000 个字符');
+    }
+    // GitHub 式资料字段（v9.0）：长度校验镜像 DTO，社交账户规范化（剔空、截 4）
+    for (const [key, value, max] of [
+      ['公司/学校', dto.company, 100],
+      ['所在地', dto.location, 100],
+      ['个人链接', dto.link, 200],
+    ] as const) {
+      if (value !== undefined && value !== null && value.length > max) {
+        throw new BadRequestException(`${key}不能超过 ${max} 个字符`);
+      }
+    }
+    if (dto.socials !== undefined && dto.socials !== null) {
+      if (dto.socials.length > 4) {
+        throw new BadRequestException('社交账户最多 4 条');
+      }
+      for (const item of dto.socials) {
+        if (item.length > 200) {
+          throw new BadRequestException('社交账户链接不能超过 200 个字符');
+        }
+      }
     }
     if (dto.pinnedItems !== undefined) {
       if (dto.pinnedItems.length > 6) {

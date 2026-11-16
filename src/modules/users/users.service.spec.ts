@@ -400,6 +400,34 @@ describe('UsersService', () => {
     expect(usersRepository.updateProfilePage).not.toHaveBeenCalled();
   });
 
+  it('更新主页：资料字段（v9.0）超长/超量返回 400，合法值透传', async () => {
+    await expect(
+      service.updateProfilePage('01890a5d-ac96-7000-8000-000000000001', { company: 'x'.repeat(101) }),
+    ).rejects.toThrow(BadRequestException);
+    await expect(
+      service.updateProfilePage('01890a5d-ac96-7000-8000-000000000001', { link: 'x'.repeat(201) }),
+    ).rejects.toThrow(BadRequestException);
+    await expect(
+      service.updateProfilePage('01890a5d-ac96-7000-8000-000000000001', {
+        socials: ['a', 'b', 'c', 'd', 'e'],
+      }),
+    ).rejects.toThrow(BadRequestException);
+
+    usersRepository.updateProfilePage.mockResolvedValue(row());
+    await service.updateProfilePage('01890a5d-ac96-7000-8000-000000000001', {
+      company: '沈阳工业大学',
+      location: '辽宁沈阳',
+      link: 'geminimortal.cn',
+      socials: ['https://github.com/GeminiMortal'],
+    });
+    expect(usersRepository.updateProfilePage).toHaveBeenCalledWith('01890a5d-ac96-7000-8000-000000000001', {
+      company: '沈阳工业大学',
+      location: '辽宁沈阳',
+      link: 'geminimortal.cn',
+      socials: ['https://github.com/GeminiMortal'],
+    });
+  });
+
   it('置顶：超过 6 项或重复返回 400', async () => {
     const seven = Array.from({ length: 7 }, (_, i) => ({ type: 'ARTICLE', id: `a-${i}` }));
     await expect(

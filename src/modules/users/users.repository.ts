@@ -546,6 +546,10 @@ export class UsersRepository {
       bio?: string | null;
       profileReadme?: string | null;
       pinnedItems?: { type: string; id: string }[];
+      company?: string | null;
+      location?: string | null;
+      link?: string | null;
+      socials?: string[] | null;
     },
   ): Promise<UserRow | null> {
     const rows = await db

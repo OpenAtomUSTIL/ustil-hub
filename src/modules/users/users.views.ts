@@ -93,6 +93,11 @@ export interface UserProfileView {
   role: Role;
   bio: string | null;
   profileReadme: string | null;
+  // GitHub 式资料字段（v9.0，公开可见）
+  company: string | null;
+  location: string | null;
+  link: string | null;
+  socials: string[];
   createdAt: string;
   stats: {
     articles: number;

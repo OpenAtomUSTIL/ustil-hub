@@ -211,6 +211,7 @@ controller → service → repository(db)
 
 补充规则：
 - 校友（`ALUMNI`）**只读密码以外无权限**——他们能看 issue、能回复、能发内容，但**不能**管理他人、**不能**看他人联系方式。
+- 个人主页资料字段（`company` / `location` / `link` / `socials`，v9.0）为**公开可见**（对齐 GitHub 资料语义）；邮箱/手机号仍仅本人可见；链接宽松校验（可裸域名，展示层补协议）。
 - 所有涉及"本人"的操作，`MUST` 在 service 层校验 `resource.authorId === currentUser.id`，`MUST NOT` 只靠前端隐藏按钮。
 - 被封禁账号（`users.status = 'BANNED'`）`MUST` 在 `JwtAuthGuard` 里直接 403，不进入业务逻辑。
 - `ADMIN` 公共账号 `MUST NOT` 被改角色/删除/封禁，service 层拦截（403）。

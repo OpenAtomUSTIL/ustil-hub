@@ -39,6 +39,11 @@ export const users = pgTable(
     bio: varchar('bio', { length: 100 }),
     profileReadme: text('profile_readme'),
     pinnedItems: jsonb('pinned_items').$type<{ type: string; id: string }[]>().default([]),
+    // GitHub 式资料字段（v9.0）：公司/学校、所在地、个人链接、社交账户（公开可见）
+    company: varchar('company', { length: 100 }),
+    location: varchar('location', { length: 100 }),
+    link: varchar('link', { length: 200 }),
+    socials: jsonb('socials').$type<string[]>().default([]),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()
