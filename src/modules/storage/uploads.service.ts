@@ -1,5 +1,5 @@
 import { Database } from '../../db';
-import { Inject, Injectable, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, Logger, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { v7 as uuidv7 } from 'uuid';
 import { AppConfig, configuration } from '../../config/configuration';
 import { AttachmentsRepository, AttachmentRow } from './attachments.repository';
@@ -37,12 +37,46 @@ const AVATAR_ALLOWED: Record<string, string[]> = {
 
 @Injectable()
 export class UploadsService {
+  private readonly logger = new Logger(UploadsService.name);
+  private pendingFileCleanup: Promise<number> | null = null;
   constructor(
     @Inject(STORAGE_SERVICE)
     private readonly storage: FileStorage,
     private readonly attachmentsRepository: AttachmentsRepository,
     @Inject(configuration.KEY) private readonly cfg: AppConfig,
   ) {}
+
+  /** 处理已提交的删除记录；R2/本地错误不丢记录，十分钟后可重试。 */
+  flushPendingFileDeletions(limit = 100): Promise<number> {
+    if (!this.pendingFileCleanup) {
+      this.pendingFileCleanup = this.drainFileDeletions(limit).finally(() => { this.pendingFileCleanup = null; });
+    }
+    return this.pendingFileCleanup;
+  }
+
+  private async drainFileDeletions(limit: number): Promise<number> {
+    const jobs = await this.attachmentsRepository.listPendingDeletions(limit);
+    let deleted = 0;
+    const started = Date.now();
+    for (const { key } of jobs) {
+      if (Date.now() - started >= 30_000) break;
+      try {
+        if (!isValidStorageKey(key)) throw new Error('Invalid storage key');
+        if (await this.attachmentsRepository.hasFileReferences(key)) {
+          // 文件仍被其他用户引用，保留记录等待引用解除，不能误删。
+          await this.attachmentsRepository.retryFileDeletion(key);
+          continue;
+        }
+        await this.storage.remove(key);
+        await this.attachmentsRepository.completeFileDeletion(key);
+        deleted++;
+      } catch {
+        await this.attachmentsRepository.retryFileDeletion(key);
+        this.logger.warn('Stored file cleanup deferred for retry');
+      }
+    }
+    return deleted;
+  }
 
   private fileExt(originalName: string): string {
     const parts = originalName.split('.');

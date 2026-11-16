@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
+import { UploadsService } from '../storage/uploads.service';
 import { SnakeService } from '../users/snake.service';
 import { UsersService } from '../users/users.service';
 
@@ -11,6 +12,7 @@ export class SchedulerService {
   constructor(
     private readonly usersService: UsersService,
     private readonly snakeService: SnakeService,
+    private readonly uploadsService: UploadsService,
   ) {}
 
   // 每日 03:00：删除创建满 7 天的 VISITOR（7 天内未持码转正）
@@ -20,6 +22,12 @@ export class SchedulerService {
     if (count > 0) {
       this.logger.log(`cleaned up ${count} expired visitor(s)`);
     }
+  }
+
+  // 存储故障恢复后重试删号遗留的持久化文件删除记录。
+  @Cron('*/10 * * * *')
+  async cleanupFiles(): Promise<void> {
+    await this.uploadsService.flushPendingFileDeletions();
   }
 
   // 每日 03:10：MEMBER 注册满 4 年自动升 ALUMNI

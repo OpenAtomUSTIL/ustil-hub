@@ -38,6 +38,10 @@ describe('UploadsService', () => {
     get: jest.fn(),
   };
   const attachmentsRepository = {
+    listPendingDeletions: jest.fn(),
+    hasFileReferences: jest.fn(),
+    completeFileDeletion: jest.fn(),
+    retryFileDeletion: jest.fn(),
     insert: jest.fn(),
     findById: jest.fn(),
     findByIds: jest.fn(),
@@ -123,4 +127,43 @@ describe('UploadsService', () => {
     ).rejects.toThrow(BadRequestException);
     expect(storage.put).not.toHaveBeenCalled();
   });
+  it('持久化删除成功后才清除记录', async () => {
+    const key = 'assignment-01890a5d-ac96-7000-8000-000000000001.pdf';
+    attachmentsRepository.listPendingDeletions.mockResolvedValue([{ key }]);
+    attachmentsRepository.hasFileReferences.mockResolvedValue(false);
+    storage.remove.mockResolvedValue(undefined);
+    expect(await service.flushPendingFileDeletions()).toBe(1);
+    expect(storage.remove).toHaveBeenCalledWith(key);
+    expect(attachmentsRepository.completeFileDeletion).toHaveBeenCalledWith(key);
+  });
+
+  it('存储删除失败保留工作记录等待重试', async () => {
+    const key = 'assignment-01890a5d-ac96-7000-8000-000000000001.pdf';
+    attachmentsRepository.listPendingDeletions.mockResolvedValue([{ key }]);
+    attachmentsRepository.hasFileReferences.mockResolvedValue(false);
+    storage.remove.mockRejectedValueOnce(new Error('R2 unavailable'));
+    expect(await service.flushPendingFileDeletions()).toBe(0);
+    expect(attachmentsRepository.retryFileDeletion).toHaveBeenCalledWith(key);
+    expect(attachmentsRepository.completeFileDeletion).not.toHaveBeenCalled();
+  });
+
+  it('其他用户仍引用的文件不能删除', async () => {
+    const key = '01890a5d-ac96-7000-8000-000000000001.png';
+    attachmentsRepository.listPendingDeletions.mockResolvedValue([{ key }]);
+    attachmentsRepository.hasFileReferences.mockResolvedValue(true);
+    expect(await service.flushPendingFileDeletions()).toBe(0);
+    expect(storage.remove).not.toHaveBeenCalled();
+    expect(attachmentsRepository.retryFileDeletion).toHaveBeenCalledWith(key);
+  });
+
+  it('并发触发回收时复用同一轮任务', async () => {
+    let resolve!: (rows: { key: string }[]) => void;
+    attachmentsRepository.listPendingDeletions.mockReturnValue(new Promise((done) => { resolve = done; }));
+    const first = service.flushPendingFileDeletions();
+    const second = service.flushPendingFileDeletions();
+    resolve([]);
+    await Promise.all([first, second]);
+    expect(attachmentsRepository.listPendingDeletions).toHaveBeenCalledTimes(1);
+  });
+
 });

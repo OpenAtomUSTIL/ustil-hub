@@ -1,3 +1,4 @@
+import * as captchaImage from '../src/modules/captcha/captcha-image';
 /* 注册 / 登录 / 改密 / 换绑 / 转正 e2e（邀请码分支 + v6.0 验证码与密码规则）
    风格与 guards.e2e-spec 一致：真实 controller + service，仓储与外部依赖打桩；
    REDIS_CLIENT 用 FakeRedis 真模拟 captcha Lua 语义（比对哈希→命中即焚/失败限次） */
@@ -33,7 +34,7 @@ import { SnakeService } from '../src/modules/users/snake.service';
 import { UsersController } from '../src/modules/users/users.controller';
 import { UsersRepository, UserRow } from '../src/modules/users/users.repository';
 import { UsersService } from '../src/modules/users/users.service';
-import { FakeRedis, readCaptchaCode } from './fake-redis';
+import { FakeRedis } from './fake-redis';
 
 const testConfig: AppConfig = {
   nodeEnv: 'test',
@@ -132,10 +133,10 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
     nickname: '测试用户',
   };
 
-  /** 取一张真实验证码并从 SVG 还原答案（全链路，不窥探内部状态） */
+  /** 真实生成与校验链路；仅在测试进程固定随机答案，不从响应中读取。 */
   async function captchaOf(): Promise<{ captchaId: string; captchaCode: string }> {
     const res = await request(app.getHttpServer()).get('/auth/captcha').expect(200);
-    return { captchaId: res.body.captchaId, captchaCode: readCaptchaCode(res.body.image) };
+    return { captchaId: res.body.captchaId, captchaCode: 'ABCDE' };
   }
 
   const tokenFor = (role: Role): string =>
@@ -145,6 +146,7 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
     );
 
   beforeAll(async () => {
+    jest.spyOn(captchaImage, 'randomCaptchaCode').mockReturnValue('ABCDE');
     passwordHash = await hashPassword('password123');
     fakeRedis = new FakeRedis();
     const moduleRef = await Test.createTestingModule({
@@ -182,6 +184,7 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
 
   afterAll(async () => {
     await app.close();
+    jest.restoreAllMocks();
   });
 
   beforeEach(() => {

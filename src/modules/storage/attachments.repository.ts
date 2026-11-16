@@ -1,12 +1,37 @@
 import { Injectable } from '@nestjs/common';
-import { desc, eq, ilike, inArray, sql } from 'drizzle-orm';
+import { desc, eq, ilike, inArray, lte, asc, sql } from 'drizzle-orm';
 import { db, Database } from '../../db';
-import { attachments } from '../../db/schema';
+import { attachments, fileDeletions, users } from '../../db/schema';
 
 export type AttachmentRow = typeof attachments.$inferSelect;
 
 @Injectable()
 export class AttachmentsRepository {
+  async listPendingDeletions(limit: number): Promise<{ key: string }[]> {
+    return db.select({ key: fileDeletions.key }).from(fileDeletions)
+      .where(lte(fileDeletions.nextAttemptAt, sql`now()`)).orderBy(asc(fileDeletions.nextAttemptAt))
+      .limit(Math.min(100, Math.max(1, limit)));
+  }
+
+  async hasFileReferences(key: string): Promise<boolean> {
+    const attachment = await db.select({ id: attachments.id }).from(attachments).where(eq(attachments.key, key)).limit(1);
+    if (attachment.length > 0) return true;
+    const avatar = await db.select({ id: users.id }).from(users)
+      .where(eq(users.avatarUrl, `/api/v1/storage/files/${key}`)).limit(1);
+    return avatar.length > 0;
+  }
+
+  async completeFileDeletion(key: string): Promise<void> {
+    await db.delete(fileDeletions).where(eq(fileDeletions.key, key));
+  }
+
+  async retryFileDeletion(key: string): Promise<void> {
+    await db.update(fileDeletions).set({
+      attempts: sql`${fileDeletions.attempts} + 1`,
+      nextAttemptAt: sql`now() + interval '10 minutes'`,
+    }).where(eq(fileDeletions.key, key));
+  }
+
   /** 仅暴露文件盘点所需字段，供后台在数据库内组合分页。 */
   adminFileSource(connection: Pick<Database, 'select'>, keyword?: string) {
     const trimmed = keyword?.trim();

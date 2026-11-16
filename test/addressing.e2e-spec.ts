@@ -181,7 +181,7 @@ describe('解析式寻址（v6.0 e2e）', () => {
         { provide: TagsService, useValue: tagsService },
         { provide: NotificationsService, useValue: notificationsService },
         { provide: AuditLogService, useValue: auditLogService },
-        { provide: UploadsService, useValue: {} },
+        { provide: UploadsService, useValue: { flushPendingFileDeletions: jest.fn().mockResolvedValue(0) } },
         { provide: SnakeService, useValue: {} },
         { provide: JwtService, useValue: new JwtService({ secret: testConfig.jwtAccessSecret }) },
         { provide: REDIS_CLIENT, useValue: new FakeRedis() },
@@ -227,12 +227,12 @@ describe('解析式寻址（v6.0 e2e）', () => {
     usersRepository.deleteById.mockResolvedValue(row({ role: Role.VISITOR }));
   });
 
-  it('GET /auth/captcha 返回 captchaId + SVG data URI', async () => {
+  it('GET /auth/captcha 返回 captchaId + PNG data URI', async () => {
     const res = await request(app.getHttpServer()).get('/auth/captcha').expect(200);
 
     expect(typeof res.body.captchaId).toBe('string');
     expect(res.body.captchaId.length).toBeGreaterThan(0);
-    expect(res.body.image).toMatch(/^data:image\/svg\+xml;base64,/);
+    expect(res.body.image).toMatch(/^data:image\/png;base64,/);
   });
 
   it('request-logs userId：email / 用户名 / 手机号命中并按 userId 过滤', async () => {

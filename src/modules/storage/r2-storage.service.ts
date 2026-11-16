@@ -20,6 +20,8 @@ export class R2StorageService implements FileStorage {
   constructor(private readonly config: R2StorageConfig) {
     this.client = new S3Client({
       region: 'auto',
+      maxAttempts: 2,
+      requestHandler: { connectionTimeout: 5000, requestTimeout: 10000, throwOnRequestTimeout: true },
       endpoint: config.endpoint,
       credentials: {
         accessKeyId: config.accessKeyId,

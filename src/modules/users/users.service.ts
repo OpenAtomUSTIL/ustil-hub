@@ -1,5 +1,5 @@
 import { Database } from '../../db';
-import { Inject, Injectable, BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, Logger, BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { verify } from 'argon2';
 import { isEmail, isMobilePhone } from 'class-validator';
 import { Role } from '../../common/decorators/roles.decorator';
@@ -43,6 +43,7 @@ export function normalizeIdentifier(identifier: string): string {
 
 @Injectable()
 export class UsersService {
+  private readonly logger = new Logger(UsersService.name);
   constructor(
     private readonly usersRepository: UsersRepository,
     private readonly uploadsService: UploadsService,
@@ -409,6 +410,9 @@ export class UsersService {
     // taggings/名下内容清理已并入 deleteById 单事务 purge（v8.0 修复 RESTRICT 500）
     const deleted = await this.usersRepository.deleteById(row.id, actor.id);
     if (!deleted) throw new ConflictException('用户角色已变化，请刷新后重试');
+    void this.uploadsService.flushPendingFileDeletions(25).catch(() => {
+      this.logger.warn('File cleanup will retry in scheduled task');
+    });
     await this.auditLogService.record({
       actor,
       action: 'user.remove',
@@ -518,11 +522,23 @@ export class UsersService {
   /** 定时任务：删除创建满 7 天的 VISITOR（级联其讨论/提交），并吊销其 refresh */
   async cleanupExpiredVisitors(): Promise<number> {
     const cutoff = new Date(Date.now() - 7 * 24 * 3600 * 1000);
-    const ids = await this.usersRepository.deleteVisitorsCreatedBefore(cutoff);
+    const ids = await this.usersRepository.listExpiredVisitorIds(cutoff);
+    let deleted = 0;
     for (const id of ids) {
-      await this.refreshStore.revokeAll(id);
+      try {
+        const removed = await this.usersRepository.deleteById(id, undefined, cutoff);
+        if (!removed) continue;
+        deleted++;
+        await this.refreshStore.revokeAll(id);
+      } catch {
+        // 单个异常不阻断其余访客清理；失败事务已回滚，下次仍可重试。
+        this.logger.warn('Expired visitor cleanup deferred');
+      }
     }
-    return ids.length;
+    await this.uploadsService.flushPendingFileDeletions().catch(() => {
+      this.logger.warn('File cleanup will retry in scheduled task');
+    });
+    return deleted;
   }
 
   /** 定时任务：MEMBER 注册满 4 年自动升 ALUMNI */

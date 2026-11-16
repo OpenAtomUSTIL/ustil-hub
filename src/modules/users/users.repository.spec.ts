@@ -3,6 +3,7 @@ import { Role } from '../../common/decorators/roles.decorator';
 import { db } from '../../db';
 import {
   announcements,
+  attachments,
   articles,
   assignmentSubmissions,
   assignments,
@@ -131,6 +132,7 @@ describe('UsersRepository.deleteById', () => {
     const sets: Record<string, unknown>[] = [];
     const tableNames = new Map<unknown, string>([
       [users, 'users'],
+      [attachments, 'attachments'],
       [taggings, 'taggings'],
       [articles, 'articles'],
       [announcements, 'announcements'],
@@ -150,6 +152,7 @@ describe('UsersRepository.deleteById', () => {
         },
         where: () => chain,
         for: () => Promise.resolve(selectRows),
+        then: (resolve: (value: unknown[]) => unknown) => Promise.resolve([]).then(resolve),
         // inArray 子查询桩：只需通过 isSQLWrapper，永不真正编译执行
         getSQL: () => sql`(select 1)`,
       };
@@ -213,6 +216,7 @@ describe('UsersRepository.deleteById', () => {
     // 顺序要点：①锁行最先 ②taggings 先于内容删除 ③改派先于作业删除 ④本人提交先于删号
     expect(tx.events).toEqual([
       'select:users',
+      'select:attachments',
       'select:articles',
       'select:issues',
       'select:resources',

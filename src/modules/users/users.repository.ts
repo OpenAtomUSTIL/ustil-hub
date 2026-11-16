@@ -1,9 +1,12 @@
+import { isValidStorageKey } from '../storage/storage.types';
 import { Injectable } from '@nestjs/common';
 import { isEmail, isMobilePhone } from 'class-validator';
 import { and, desc, eq, gte, ilike, inArray, isNull, like, lt, ne, or, sql } from 'drizzle-orm';
 import { db, Database, type DatabaseTransaction } from '../../db';
 import {
   announcements,
+  attachments,
+  fileDeletions,
   articles,
   assignmentSubmissions,
   assignments,
@@ -290,15 +293,41 @@ export class UsersRepository {
    * ②taggings 先于内容删除（子查询要靠内容行定位 targetId，反了会留孤儿污染标签计数）；
    * ③作业改派先于作业删除；④本人提交显式先删（消除附件级联 vs 提交 RESTRICT 的顺序不确定性）。
    */
-  async deleteById(id: string, reassignedPublisherTo: string): Promise<UserRow | null> {
+  async deleteById(id: string, reassignedPublisherTo?: string, expiredBefore?: Date): Promise<UserRow | null> {
     return db.transaction(async (tx) => {
       const [locked] = await tx
-        .select({ role: users.role })
+        .select({ role: users.role, createdAt: users.createdAt, avatarUrl: users.avatarUrl })
         .from(users)
         .where(eq(users.id, id))
         .for('update');
       if (!locked || (locked.role !== 'MEMBER' && locked.role !== 'VISITOR')) {
         return null;
+      }
+
+      // 自动清理须在锁内再次确认仍为过期访客，避免与转正/角色变更竞争。
+      if (expiredBefore && (locked.role !== 'VISITOR' || locked.createdAt >= expiredBefore)) return null;
+      let publisher = reassignedPublisherTo;
+      if (!publisher) {
+        const [admin] = await tx.select({ id: users.id }).from(users).where(eq(users.role, 'ADMIN')).limit(1);
+        publisher = admin?.id;
+        if (!publisher) {
+          const protectedAssignments = await tx.select({ id: assignments.id }).from(assignments)
+            .where(and(eq(assignments.publisherId, id), inArray(assignments.id,
+              tx.select({ id: assignmentSubmissions.assignmentId }).from(assignmentSubmissions)
+                .where(ne(assignmentSubmissions.submitterId, id)),
+            ))).limit(1);
+          // 未配置管理员时保留含他人提交的账号，不能为了清理而删除他人的作业。
+          if (protectedAssignments.length > 0) return null;
+        }
+      }
+
+      // 先登记文件删除工作，再执行级联删除，保证故障后 key 仍有记录。
+      const files = await tx.select({ key: attachments.key }).from(attachments).where(eq(attachments.uploaderId, id));
+      const avatarKey = locked.avatarUrl?.match(/^\/api\/v1\/storage\/files\/(.+)$/)?.[1];
+      const keys = new Set(files.map((file) => file.key));
+      if (avatarKey) keys.add(avatarKey);
+      for (const key of keys) if (isValidStorageKey(key)) {
+        await tx.insert(fileDeletions).values({ key }).onConflictDoNothing();
       }
 
       // taggings 无多态 FK，必须显式清理（须在内容行删除前，子查询要能命中目标）
@@ -325,9 +354,9 @@ export class UsersRepository {
       await tx.delete(resources).where(eq(resources.creatorId, id));
 
       // 作业：已有他人提交的改派给执行剔除的管理员，不连带删他人提交
-      await tx
+      if (publisher) await tx
         .update(assignments)
-        .set({ publisherId: reassignedPublisherTo })
+        .set({ publisherId: publisher })
         .where(
           and(
             eq(assignments.publisherId, id),
@@ -370,12 +399,10 @@ export class UsersRepository {
     return rows[0]?.count ?? 0;
   }
 
-  // 定时清理：删除满 7 天的 VISITOR（级联其讨论/提交），返回被删 id
-  async deleteVisitorsCreatedBefore(before: Date): Promise<string[]> {
-    const rows = await db
-      .delete(users)
-      .where(and(eq(users.role, 'VISITOR'), lt(users.createdAt, before)))
-      .returning({ id: users.id });
+  // 只列候选账号；删除必须复用 deleteById，并在事务锁内重查角色与过期时间。
+  async listExpiredVisitorIds(before: Date): Promise<string[]> {
+    const rows = await db.select({ id: users.id }).from(users)
+      .where(and(eq(users.role, 'VISITOR'), lt(users.createdAt, before)));
     return rows.map((row) => row.id);
   }
 

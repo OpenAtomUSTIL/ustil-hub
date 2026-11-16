@@ -54,7 +54,7 @@ export class FakeRedis {
     const argv = args.slice(numKeys).map(String);
     const [firstKey] = keys;
     if (firstKey.startsWith('captcha:')) return this.evalCaptcha(keys, argv);
-    if (firstKey.startsWith('register_attempt:') || firstKey.startsWith('login_fail:')) {
+    if (firstKey.startsWith('captcha_rate:') || firstKey.startsWith('register_attempt:') || firstKey.startsWith('login_fail:')) {
       return this.evalIncrWithTtl(keys, argv);
     }
     if (firstKey.startsWith('refresh:')) return this.evalRefreshRotate(keys, argv);
@@ -95,11 +95,4 @@ export class FakeRedis {
     }
     return 0;
   }
-}
-
-/** 从自绘 SVG data URI 还原验证码字符（走真实渲染产物，e2e 全链路取码） */
-export function readCaptchaCode(image: string): string {
-  const base64 = image.replace(/^data:image\/svg\+xml;base64,/, '');
-  const svg = Buffer.from(base64, 'base64').toString('utf8');
-  return [...svg.matchAll(/<text[^>]*>([^<])<\/text>/g)].map((m) => m[1]).join('');
 }

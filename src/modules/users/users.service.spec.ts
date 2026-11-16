@@ -69,7 +69,7 @@ describe('UsersService', () => {
     updateRole: jest.fn(),
     deleteById: jest.fn(),
     applyInviteCode: jest.fn(),
-    deleteVisitorsCreatedBefore: jest.fn(),
+    listExpiredVisitorIds: jest.fn(),
     promoteMembersCreatedBefore: jest.fn(),
     getProfileStats: jest.fn(),
     getProfileTopTags: jest.fn(),
@@ -79,6 +79,7 @@ describe('UsersService', () => {
     listRepliesByAuthor: jest.fn(),
   };
   const uploadsService = {
+    flushPendingFileDeletions: jest.fn().mockResolvedValue(0),
     storeAvatar: jest.fn(),
     saveAssignmentFile: jest.fn(),
     getAttachmentView: jest.fn(),
@@ -237,7 +238,8 @@ describe('UsersService', () => {
   });
 
   it('定时清理：删除满 7 天 VISITOR 并吊销 refresh', async () => {
-    usersRepository.deleteVisitorsCreatedBefore.mockResolvedValue(['id-1', 'id-2']);
+    usersRepository.listExpiredVisitorIds.mockResolvedValue(['id-1', 'id-2']);
+    usersRepository.deleteById.mockResolvedValue(row({ role: Role.VISITOR }));
 
     const count = await service.cleanupExpiredVisitors();
 
@@ -666,4 +668,13 @@ describe('UsersService', () => {
     ).toBe(1);
     expect(computeStreak([{ date: '2026-01-03', count: 0 }], today)).toBe(0);
   });
+  it('过期访客逐个使用事务 purge，角色已变化的账号不能误删', async () => {
+    usersRepository.listExpiredVisitorIds.mockResolvedValue(['expired', 'promoted']);
+    usersRepository.deleteById.mockResolvedValueOnce(row({ role: Role.VISITOR })).mockResolvedValueOnce(null);
+    const count = await service.cleanupExpiredVisitors();
+    expect(count).toBe(1);
+    expect(usersRepository.deleteById).toHaveBeenCalledWith('expired', undefined, expect.any(Date));
+    expect(refreshStore.revokeAll).toHaveBeenCalledTimes(1);
+  });
+
 });

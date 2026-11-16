@@ -250,7 +250,7 @@ controller → service → repository(db)
 - Redis 计数器：同一 `identifier`（邮箱/手机）+ IP 组合，15 分钟内失败 5 次 → 返回 429 并锁定 15 分钟。
 - 登录失败响应 `MUST` 统一为"账号或密码错误"，`MUST NOT` 区分"用户不存在"与"密码错误"（防账号枚举）。
 - 注册时邮箱/手机号唯一性冲突用 409 返回，这是少数允许明确告知的场景。
-- 敏感操作图形验证码：注册 / 登录 / 改密 / 换绑 / 持码转正 `MUST` 校验 `captchaId` + `captchaCode`（自绘 SVG，答案 sha256 存 Redis、TTL 5 分钟、一次性消费、单 captchaId 失败 3 次作废），校验失败统一 400「验证码错误或已失效」，与 IP 限流叠加而非替代。
+- 敏感操作图形验证码：注册 / 登录 / 改密 / 换绑 / 持码转正 `MUST` 校验 `captchaId` + `captchaCode`（自绘 PNG，图片不携带文字答案元数据，答案 sha256 存 Redis、TTL 5 分钟、一次性消费、单 captchaId 失败 3 次作废），校验失败统一 400「验证码错误或已失效」，与 IP 限流叠加而非替代。
 
 ### 11.4 账号绑定
 - 一个账号 `MUST` 只绑定**一个**邮箱或**一个**手机号（满足即可注册）。
@@ -299,7 +299,7 @@ interface StorageService {
 
 1. 登录失败限流（§11.3）
 2. `refresh_token` 白名单 / 黑名单（§11.2）
-3. 图形验证码答案（sha256 哈希，不落明文——§16.1）：key `captcha:{captchaId}` / `captcha:attempts:{captchaId}`，TTL 5 分钟
+3. 图形验证码答案（sha256 哈希，不落明文——§16.1）：key `captcha:{captchaId}` / `captcha:attempts:{captchaId}`，TTL 5 分钟；图片获取按 `captcha_rate:{ip}` 限制每分钟 60 次，TTL 60 秒
 
 `MUST NOT` 在 MVP 引入 BullMQ 或其它队列。key 命名统一 `{业务}:{标识}:{id}`，全部设置 TTL。
 

@@ -1,7 +1,7 @@
-import { BadRequestException, Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, HttpException, HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import { REDIS_CLIENT, RedisClient } from '../../db/redis';
-import { randomCaptchaCode, renderCaptchaSvg, type CaptchaTheme } from './captcha-svg';
+import { randomCaptchaCode, renderCaptchaPng, type CaptchaTheme } from './captcha-image';
 
 const CAPTCHA_TTL_SECONDS = 5 * 60;
 const CAPTCHA_MAX_ATTEMPTS = 3;
@@ -9,7 +9,7 @@ const CAPTCHA_MAX_ATTEMPTS = 3;
 const CAPTCHA_ERROR = '验证码错误或已失效';
 
 /**
- * 敏感操作图形验证码（v6.0）：自绘 SVG，答案以 sha256 落 Redis（AGENTS.md §16.1 不落明文），
+ * 敏感操作图形验证码（v6.0）：自绘 PNG，答案以 sha256 落 Redis（AGENTS.md §16.1 不落明文），
  * 短 TTL + 一次性消费 + 单 captchaId 失败限次；与既有 IP 限流叠加而非替代。
  */
 @Injectable()
@@ -28,15 +28,21 @@ export class CaptchaService {
     return createHash('sha256').update(code).digest('hex');
   }
 
-  /** theme 仅决定 SVG 配色（深/浅），答案生成与存储语义不受影响 */
-  async create(theme: CaptchaTheme = 'light'): Promise<{ captchaId: string; image: string }> {
+  /** theme 仅决定 PNG 配色（深/浅），答案生成与存储语义不受影响 */
+  async create(theme: CaptchaTheme = 'light', ip = 'unknown'): Promise<{ captchaId: string; image: string }> {
+    const attempts = Number(await this.redis.eval(
+      `local count = redis.call('INCR', KEYS[1])
+       if count == 1 then redis.call('EXPIRE', KEYS[1], 60) end
+       return count`, 1, `captcha_rate:${ip}`,
+    ));
+    if (attempts > 60) throw new HttpException('验证码获取过于频繁，请稍后再试', HttpStatus.TOO_MANY_REQUESTS);
     const captchaId = randomUUID();
     const code = randomCaptchaCode().toLowerCase();
     await this.redis.set(this.key(captchaId), this.hash(code), 'EX', CAPTCHA_TTL_SECONDS);
-    const svg = renderCaptchaSvg(code.toUpperCase(), theme);
+    const png = renderCaptchaPng(code.toUpperCase(), theme);
     return {
       captchaId,
-      image: `data:image/svg+xml;base64,${Buffer.from(svg, 'utf8').toString('base64')}`,
+      image: `data:image/png;base64,${png.toString('base64')}`,
     };
   }
 

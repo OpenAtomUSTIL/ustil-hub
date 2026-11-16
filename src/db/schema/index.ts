@@ -15,3 +15,4 @@ export * from './resources';
 export * from './request_logs';
 export * from './audit_logs';
 export * from './login_logs';
+export * from './file_deletions';
