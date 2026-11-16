@@ -31,7 +31,7 @@ info:
     - **资源地址**：创建、更新只允许带协议的 HTTP / HTTPS 链接，FTP 等其他协议返回 400。
     - **标签**：`tags` 可省略，更新时 `[]` 表示清空，显式 `null` 返回 400。公告 `pinned` / `notify` 可省略，必须是布尔值，`null` 或字符串 `"false"` 返回 400。
 servers:
-  - url: https://openatomustil.cn/api/v1
+  - url: https://forum.openatomustil.cn/api/v1
     description: 生产环境
   - url: http://localhost:3000/api/v1
     description: 本地调试（自签证书，见 deploy/init-certs.sh）
