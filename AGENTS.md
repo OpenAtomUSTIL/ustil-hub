@@ -211,7 +211,7 @@ controller → service → repository(db)
 
 补充规则：
 - 校友（`ALUMNI`）**只读密码以外无权限**——他们能看 issue、能回复、能发内容，但**不能**管理他人、**不能**看他人联系方式。
-- 个人主页资料字段（`company` / `location` / `link` / `socials`，v9.0）为**公开可见**（对齐 GitHub 资料语义）；邮箱/手机号仍仅本人可见；链接宽松校验（可裸域名，展示层补协议）。
+- 个人主页资料字段（`company` / `location` / `link` / `socials`，v9.0）为**公开可见**（对齐 GitHub 资料语义）；邮箱/手机号仍仅本人可见（库内为密文，见 §11.5）；链接宽松校验（可裸域名，展示层补协议）。
 - 所有涉及"本人"的操作，`MUST` 在 service 层校验 `resource.authorId === currentUser.id`，`MUST NOT` 只靠前端隐藏按钮。
 - 被封禁账号（`users.status = 'BANNED'`）`MUST` 在 `JwtAuthGuard` 里直接 403，不进入业务逻辑。
 - `ADMIN` 公共账号 `MUST NOT` 被改角色/删除/封禁，service 层拦截（403）。
@@ -256,6 +256,18 @@ controller → service → repository(db)
 ### 11.4 账号绑定
 - 一个账号 `MUST` 只绑定**一个**邮箱或**一个**手机号（满足即可注册）。
 - 绑定新邮箱/手机号 `MUST` 校验当前密码。
+
+### 11.5 个人信息信封加密（v10.0）
+
+个人字段（`email` / `phone` / `bio` / `company` / `location` / `link` / `socials` / `profileReadme`）库内一律存**信封 token**，`MUST NOT` 落明文；API 契约不变（请求/响应仍明文，加解密封装在 users 模块）。
+
+- **用户标识（crypto_id）**：每用户 `crypto_id`（16 字节随机 → 32 位十六进制小写，库级唯一，生成后永不变），参与密钥派生并作信封 keyId。
+- **信封格式**：`v1.<cryptoId>.<encryptedAtMs>.<base64url(iv|tag|ciphertext)>`（AES-256-GCM）；解密校验 token 内 cryptoId 与行一致，不一致拒解（防跨用户挪信封）；`v1.` 版本段预留轮换。
+- **密钥派生（HKDF）**：`HKDF-SHA256(masterKey, salt=cryptoId, info='ustil-pii-v1')` → 每用户独立数据密钥。
+- **时间戳 AAD**：`encryptedAt` 不作密钥（可预测），随 token 内嵌并进 AAD（含用途域 `email`/`phone`/`profile`/`social`），解密校验 AAD——防跨字段/跨用户替换；完整性由 GCM 认证标签承担。
+- **查找列 HMAC**：`email_hmac` / `phone_hmac`（HMAC-SHA256(masterKey)，确定性、不可逆）承载唯一约束与精确查找（登录/寻址/换绑）；唯一约束已从 `email`/`phone` 迁至 hmac 列。后台用户 keyword 模糊搜**只搜昵称/用户名**（密文不可模糊检索）。
+- **主密钥**：环境变量 `APP_ENCRYPTION_KEY`（32 字节 base64，生成方式见 `.env.example`），`MUST NOT` 入库、`MUST NOT` 进日志/错误输出（红线见 §16）。
+- **轮换注意**：换主密钥后旧密文与旧 HMAC 全部失效——`MUST` 先用旧钥解密、再用新钥重新封存并重算 HMAC（可基于 `src/scripts/backfill-pii.ts` 改造），禁止只换密钥不重加密；丢失主密钥 = 个人字段永久不可恢复。
 
 ## 12. 存储与文件上传
 
@@ -315,6 +327,7 @@ interface StorageService {
 5. 把 `DB_URL`、密钥等写进代码或提交 `.env`。
 6. 直接返回 DB 实体（泄露私有字段）。
 7. 分页无上限（可被拉全表）。
+8. 主密钥（`APP_ENCRYPTION_KEY`）入库，或经日志/错误输出/异常信息外泄（见 §11.5）。
 
 ## 17. 测试
 

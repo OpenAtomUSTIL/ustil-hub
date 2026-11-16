@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { CurrentAuthUser } from '../../common/decorators/current-user.decorator';
 import { Role } from '../../common/decorators/roles.decorator';
 import { requireRole } from '../../common/permissions';
+import { CryptoService } from '../../common/crypto/crypto.service';
 import { UsersRepository } from './users.repository';
 import { OnlineUsersView } from './users.views';
 
@@ -14,7 +15,10 @@ const TOUCH_MAP_LIMIT = 10000;
 export class PresenceService {
   private readonly lastTouchAt = new Map<string, number>();
 
-  constructor(private readonly usersRepository: UsersRepository) {}
+  constructor(
+    private readonly usersRepository: UsersRepository,
+    private readonly crypto: CryptoService,
+  ) {}
 
   // 节流更新最近活跃时间：失败静默，不拖慢请求
   touch(userId: string): void {
@@ -43,7 +47,8 @@ export class PresenceService {
       total: rows.length,
       items: rows.map((row) => ({
         userId: row.id,
-        email: row.email,
+        // v10.0：库内为信封 token，输出前解密（缺 cryptoId/校验失败时优雅降级为空）
+        email: row.cryptoId ? this.crypto.open('email', row.email, row.cryptoId) ?? '' : '',
         nickname: row.nickname,
         role: row.role as Role,
         lastSeenAt: (row.lastSeenAt ?? since).toISOString(),

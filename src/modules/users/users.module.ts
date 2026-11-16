@@ -1,6 +1,7 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { redisProvider, refreshTokenStoreProvider } from '../../db/redis';
+import { CryptoModule } from '../../common/crypto/crypto.module';
 import { AuditModule } from '../audit/audit.module';
 import { CaptchaModule } from '../captcha/captcha.module';
 import { NotificationsModule } from '../notifications/notifications.module';
@@ -14,7 +15,7 @@ import { UsersRepository } from './users.repository';
 import { UsersService } from './users.service';
 
 @Module({
-  imports: [StorageModule, NotificationsModule, forwardRef(() => AuditModule), CaptchaModule],
+  imports: [CryptoModule, StorageModule, NotificationsModule, forwardRef(() => AuditModule), CaptchaModule],
   controllers: [UsersController, AdminOnlineUsersController],
   providers: [
     UsersRepository,

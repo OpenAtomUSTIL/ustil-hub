@@ -5,7 +5,8 @@ import { isEmail, isMobilePhone } from 'class-validator';
 import { Role } from '../../common/decorators/roles.decorator';
 import { CurrentAuthUser } from '../../common/decorators/current-user.decorator';
 import { Page } from '../../common/dto/page';
-import { USERNAME_RE, uniqueUsername } from '../../common/utils/identifiers';
+import { CryptoService } from '../../common/crypto/crypto.service';
+import { isUuid, USERNAME_RE, uniqueUsername } from '../../common/utils/identifiers';
 import { requireRole } from '../../common/permissions';
 import { REFRESH_TOKEN_STORE, RefreshTokenStore } from '../../db/redis';
 import { UserStatus } from '../../db/schema';
@@ -46,12 +47,18 @@ export class UsersService {
   private readonly logger = new Logger(UsersService.name);
   constructor(
     private readonly usersRepository: UsersRepository,
+    private readonly crypto: CryptoService,
     private readonly uploadsService: UploadsService,
     private readonly notificationsService: NotificationsService,
     private readonly auditLogService: AuditLogService,
     private readonly captchaService: CaptchaService,
     @Inject(REFRESH_TOKEN_STORE) private readonly refreshStore: RefreshTokenStore,
   ) {}
+
+  /** 解密行内信封字段（v10.0）：行缺 cryptoId（回填前）或 token 校验失败一律返回 null，视图优雅降级 */
+  private openField(purpose: string, token: string | null | undefined, row: UserRow): string | null {
+    return this.crypto.open(purpose, token, row.cryptoId ?? '');
+  }
 
   private toSelf(row: UserRow): UserSelf {
     const self: UserSelf = {
@@ -65,10 +72,12 @@ export class UsersService {
       updatedAt: row.updatedAt.toISOString(),
     };
     if (row.email) {
-      self.email = row.email;
+      const email = this.openField('email', row.email, row);
+      if (email) self.email = email;
     }
     if (row.phone) {
-      self.phone = row.phone;
+      const phone = this.openField('phone', row.phone, row);
+      if (phone) self.phone = phone;
     }
     return self;
   }
@@ -100,9 +109,16 @@ export class UsersService {
         const username = await uniqueUsername(input.nickname, (u) =>
           this.usersRepository.usernameExists(u, tx),
         );
+        // 信封加密（v10.0）：每用户 cryptoId 参与密钥派生；标识列存 token，唯一性/精确查走 HMAC 列
+        const cryptoId = this.crypto.newCryptoId();
+        const email = input.email ? normalizeIdentifier(input.email) : null;
+        const phone = input.phone ?? null;
         const row = await this.usersRepository.insert({
-          email: input.email ?? null,
-          phone: input.phone ?? null,
+          email: this.crypto.seal('email', email, cryptoId),
+          phone: this.crypto.seal('phone', phone, cryptoId),
+          cryptoId,
+          emailHmac: email ? this.crypto.hmac(email) : null,
+          phoneHmac: phone ? this.crypto.hmac(phone) : null,
           passwordHash: input.passwordHash,
           nickname: input.nickname,
           username,
@@ -119,14 +135,27 @@ export class UsersService {
     }
   }
 
+  /** 登录精确查（v10.0）：identifier 归一化（邮箱小写、手机号原样）后按 HMAC 查找列定位 */
   async findByIdentifier(identifier: string): Promise<UserAuthRecord | null> {
-    const row = await this.usersRepository.findByEmailOrPhone(normalizeIdentifier(identifier));
+    const hmac = this.crypto.hmac(normalizeIdentifier(identifier));
+    const row = await this.usersRepository.findByEmailHmacOrPhoneHmac(hmac, hmac);
     return row ? this.toAuthRecord(row) : null;
   }
 
-  /** 解析式寻址（v6.0）：uuid / 用户名（含历史）/ 邮箱 / 手机号 → UserRow；未命中 null，语义由调用方决定 */
+  /**
+   * 解析式寻址（v6.0→v10.0）：uuid → username（含历史 handle）→ email → phone，顺序即优先级。
+   * email 形状与 username 不撞形（USERNAME_RE 不含 @）可直达；纯数字可能与 username 撞形，username 优先。
+   * email/phone 精确查走 HMAC 查找列（hmac 前邮箱小写、手机号原样）；未命中 null，语义由调用方决定。
+   */
   async resolveRowByIdentifier(identifier: string): Promise<UserRow | null> {
-    return this.usersRepository.findByIdentifier(identifier);
+    const trimmed = identifier.trim();
+    if (!trimmed) return null;
+    if (isUuid(trimmed)) return this.usersRepository.findById(trimmed);
+    if (isEmail(trimmed)) return this.usersRepository.findByEmailHmac(this.crypto.hmac(normalizeIdentifier(trimmed)));
+    const byUsername = await this.usersRepository.findByUsername(trimmed);
+    if (byUsername) return byUsername;
+    if (isMobilePhone(trimmed, 'zh-CN')) return this.usersRepository.findByPhoneHmac(this.crypto.hmac(trimmed));
+    return null;
   }
 
   async getAuthRecordById(id: string): Promise<UserAuthRecord | null> {
@@ -137,8 +166,8 @@ export class UsersService {
   private toAuthRecord(row: UserRow): UserAuthRecord {
     return {
       id: row.id,
-      email: row.email,
-      phone: row.phone,
+      email: this.openField('email', row.email, row),
+      phone: this.openField('phone', row.phone, row),
       passwordHash: row.passwordHash,
       nickname: row.nickname,
       avatarUrl: row.avatarUrl,
@@ -166,7 +195,7 @@ export class UsersService {
           role: row.role as Role,
           status: row.status,
           sessionVersion: row.sessionVersion,
-          email: row.email,
+          email: this.openField('email', row.email, row),
         }
       : null;
   }
@@ -216,16 +245,25 @@ export class UsersService {
     } else if (!isMobilePhone(value, 'zh-CN')) {
       throw new BadRequestException('手机号格式错误');
     }
-    const existing = await this.usersRepository.findByEmailOrPhone(value);
+    // 占用检查走 HMAC 查找列（v10.0）：邮箱小写取 hmac、手机号原样取 hmac
+    const hmac = this.crypto.hmac(value);
+    const existing =
+      dto.type === 'email'
+        ? await this.usersRepository.findByEmailHmac(hmac)
+        : await this.usersRepository.findByPhoneHmac(hmac);
     if (existing && existing.id !== id) {
       throw new ConflictException('该邮箱或手机号已被占用');
     }
-    // 一个账号只绑定一个标识：换绑时清空另一种标识
+    // 一个账号只绑定一个标识：换绑时清空另一种标识（含 HMAC 查找列）；新值 seal 信封 token 入库
+    const cryptoId = row.cryptoId ?? this.crypto.newCryptoId();
     let updated: UserRow | null;
     try {
       updated = await this.usersRepository.updateIdentifier(id, {
-        email: dto.type === 'email' ? value : null,
-        phone: dto.type === 'phone' ? value : null,
+        email: dto.type === 'email' ? this.crypto.seal('email', value, cryptoId) : null,
+        phone: dto.type === 'phone' ? this.crypto.seal('phone', value, cryptoId) : null,
+        emailHmac: dto.type === 'email' ? hmac : null,
+        phoneHmac: dto.type === 'phone' ? hmac : null,
+        ...(row.cryptoId ? {} : { cryptoId }),
       });
     } catch (error) {
       if (isUniqueViolation(error)) throw new ConflictException('该邮箱或手机号已被占用');
@@ -253,7 +291,7 @@ export class UsersService {
   }
 
   private async requireNonAdmin(identifier: string): Promise<UserRow> {
-    const row = await this.usersRepository.findByIdentifier(identifier);
+    const row = await this.resolveRowByIdentifier(identifier);
     if (!row) throw new NotFoundException('用户不存在');
     if (row.role === Role.ADMIN) throw new ForbiddenException('不可修改管理员账号');
     return row;
@@ -298,14 +336,17 @@ export class UsersService {
   // ===== 管理后台 =====
 
   private toAdminView(row: UserRow): AdminUserView {
+    // 掩码用解密后明文再打码（v10.0），密文不进视图
     let contact: string | null = null;
-    if (row.email) {
-      const [local, domain] = row.email.split('@');
+    const email = this.openField('email', row.email, row);
+    const phone = this.openField('phone', row.phone, row);
+    if (email) {
+      const [local, domain] = email.split('@');
       contact = `${local.slice(0, 1)}***@${domain}`;
-    } else if (row.phone) {
+    } else if (phone) {
       contact =
-        row.phone.length >= 7
-          ? `${row.phone.slice(0, 3)}****${row.phone.slice(-4)}`
+        phone.length >= 7
+          ? `${phone.slice(0, 3)}****${phone.slice(-4)}`
           : '***';
     }
     return {
@@ -340,7 +381,7 @@ export class UsersService {
     if (![Role.VISITOR, Role.MEMBER, Role.ALUMNI, Role.WHEEL].includes(role)) {
       throw new BadRequestException('不允许授予该角色');
     }
-    const row = await this.usersRepository.findByIdentifier(identifier);
+    const row = await this.resolveRowByIdentifier(identifier);
     if (!row) {
       throw new NotFoundException('用户不存在');
     }
@@ -370,7 +411,7 @@ export class UsersService {
 
   async promoteToAlumni(identifier: string, actor: CurrentAuthUser): Promise<AdminUserView> {
     requireRole(actor, Role.WHEEL, Role.ADMIN);
-    const row = await this.usersRepository.findByIdentifier(identifier);
+    const row = await this.resolveRowByIdentifier(identifier);
     if (!row) {
       throw new NotFoundException('用户不存在');
     }
@@ -399,7 +440,7 @@ export class UsersService {
 
   async removeByAdmin(identifier: string, actor: CurrentAuthUser): Promise<void> {
     requireRole(actor, Role.WHEEL, Role.ADMIN);
-    const row = await this.usersRepository.findByIdentifier(identifier);
+    const row = await this.resolveRowByIdentifier(identifier);
     if (!row) {
       throw new NotFoundException('用户不存在');
     }
@@ -445,7 +486,7 @@ export class UsersService {
       rows: rows
         .map((row) => ({
           userId: row.id,
-          email: row.email,
+          email: this.openField('email', row.email, row),
           nickname: row.nickname,
           key: this.avatarKeyOf(row.avatarUrl) ?? '',
           updatedAt: row.updatedAt,
@@ -486,12 +527,18 @@ export class UsersService {
     return this.usersRepository.findAvatarReferencedKeys(keys);
   }
 
-  /** 管理端上传者邮箱展示 */
+  /** 管理端上传者邮箱展示（v10.0：解密后明文出视图） */
   async getEmailsByIds(ids: string[]): Promise<Map<string, string | null>> {
-    return this.usersRepository.findEmailsByIds(ids);
+    const rows = await this.usersRepository.findEmailsByIds(ids);
+    return new Map(
+      [...rows].map(([id, value]) => [
+        id,
+        this.crypto.open('email', value.email, value.cryptoId ?? ''),
+      ]),
+    );
   }
 
-  /** 按昵称/邮箱模糊搜用户 id（管理端评论按作者搜索用） */
+  /** 按昵称模糊搜用户 id（管理端评论按作者搜索用；v10.0 邮箱加密后退出模糊搜） */
   async searchIdsByKeyword(keyword: string): Promise<string[]> {
     return this.usersRepository.searchIdsByKeyword(keyword);
   }
@@ -586,12 +633,14 @@ export class UsersService {
       nickname: row.nickname,
       avatarUrl: row.avatarUrl,
       role: row.role as Role,
-      bio: row.bio,
-      profileReadme: row.profileReadme,
-      company: row.company,
-      location: row.location,
-      link: row.link,
-      socials: row.socials ?? [],
+      bio: this.openField('profile', row.bio, row),
+      profileReadme: this.openField('profile', row.profileReadme, row),
+      company: this.openField('profile', row.company, row),
+      location: this.openField('profile', row.location, row),
+      link: this.openField('profile', row.link, row),
+      socials: (row.socials ?? [])
+        .map((item) => this.openField('social', item, row))
+        .filter((item): item is string => item !== null),
       createdAt: row.createdAt.toISOString(),
       stats,
       topTags,
@@ -602,8 +651,10 @@ export class UsersService {
       followingCount: followCounts.following,
     };
     if (isSelf) {
-      if (row.email) profile.email = row.email;
-      if (row.phone) profile.phone = row.phone;
+      const email = this.openField('email', row.email, row);
+      if (email) profile.email = email;
+      const phone = this.openField('phone', row.phone, row);
+      if (phone) profile.phone = phone;
     }
     return profile;
   }
@@ -663,8 +714,30 @@ export class UsersService {
         }
       }
     }
-    const row = await this.usersRepository.updateProfilePage(userId, dto);
+    // 信封加密（v10.0）：资料字段共用 'profile' 用途域，socials 逐条 'social'（空串 seal 为 null 条目，读取侧过滤）
+    const row = await this.usersRepository.findById(userId);
     if (!row) {
+      throw new NotFoundException('用户不存在');
+    }
+    const cryptoId = row.cryptoId ?? this.crypto.newCryptoId();
+    const sealProfile = (value: string | null | undefined): string | null | undefined =>
+      value === undefined ? undefined : this.crypto.seal('profile', value, cryptoId);
+    const updated = await this.usersRepository.updateProfilePage(userId, {
+      bio: sealProfile(dto.bio),
+      profileReadme: sealProfile(dto.profileReadme),
+      pinnedItems: dto.pinnedItems,
+      company: sealProfile(dto.company),
+      location: sealProfile(dto.location),
+      link: sealProfile(dto.link),
+      socials:
+        dto.socials === undefined
+          ? undefined
+          : dto.socials === null
+            ? null
+            : dto.socials.map((item) => this.crypto.seal('social', item, cryptoId)),
+      ...(row.cryptoId ? {} : { cryptoId }),
+    });
+    if (!updated) {
       throw new NotFoundException('用户不存在');
     }
   }
@@ -800,7 +873,7 @@ export class UsersService {
       nickname: row.nickname,
       avatarUrl: row.avatarUrl,
       role: row.role as Role,
-      bio: row.bio,
+      bio: this.openField('profile', row.bio, row),
       isSelf: viewerId === row.id,
       isFollowing: followed,
     };

@@ -1,6 +1,8 @@
 import { sql } from 'drizzle-orm';
 import { Role } from '../../common/decorators/roles.decorator';
+import { CryptoService } from '../../common/crypto/crypto.service';
 import { db } from '../../db';
+import { RefreshTokenStore } from '../../db/redis';
 import {
   announcements,
   attachments,
@@ -13,7 +15,12 @@ import {
   UserStatus,
   users,
 } from '../../db/schema';
+import { AuditLogService } from '../audit/audit-log.service';
+import { CaptchaService } from '../captcha/captcha.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { UploadsService } from '../storage/uploads.service';
 import { UsersRepository, UserRow } from './users.repository';
+import { UsersService } from './users.service';
 
 const now = new Date('2026-01-01T00:00:00.000Z');
 
@@ -35,18 +42,40 @@ function row(overrides: Partial<UserRow> = {}): UserRow {
   } as UserRow;
 }
 
-/** 解析式寻址（v6.0）findByIdentifier：uuid → username（含历史 handle）→ email → phone */
-describe('UsersRepository.findByIdentifier', () => {
+/** 解析式寻址（v6.0→v10.0）resolveRowByIdentifier：uuid → username（含历史 handle）→ email → phone；精确查走 HMAC 列 */
+describe('UsersService.resolveRowByIdentifier', () => {
+  // CryptoService 打桩：hmac 加 'h:' 前缀便于断言归一化后的取值
+  const cryptoStub = {
+    newCryptoId: (): string => 'a'.repeat(32),
+    seal: (_purpose: string, plaintext: string | null | undefined): string | null =>
+      plaintext ? 'v1.test.' + plaintext : null,
+    open: (_purpose: string, token: string | null | undefined): string | null =>
+      token ? token.replace('v1.test.', '') : null,
+    hmac: (plaintext: string): string => 'h:' + plaintext,
+  };
+
   let repository: UsersRepository;
+  let service: UsersService;
   let findById: jest.SpyInstance;
   let findByUsername: jest.SpyInstance;
-  let findByEmailOrPhone: jest.SpyInstance;
+  let findByEmailHmac: jest.SpyInstance;
+  let findByPhoneHmac: jest.SpyInstance;
 
   beforeEach(() => {
     repository = new UsersRepository();
     findById = jest.spyOn(repository, 'findById').mockResolvedValue(null);
     findByUsername = jest.spyOn(repository, 'findByUsername').mockResolvedValue(null);
-    findByEmailOrPhone = jest.spyOn(repository, 'findByEmailOrPhone').mockResolvedValue(null);
+    findByEmailHmac = jest.spyOn(repository, 'findByEmailHmac').mockResolvedValue(null);
+    findByPhoneHmac = jest.spyOn(repository, 'findByPhoneHmac').mockResolvedValue(null);
+    service = new UsersService(
+      repository,
+      cryptoStub as unknown as CryptoService,
+      {} as unknown as UploadsService,
+      {} as unknown as NotificationsService,
+      {} as unknown as AuditLogService,
+      {} as unknown as CaptchaService,
+      {} as unknown as RefreshTokenStore,
+    );
   });
 
   afterEach(() => {
@@ -57,70 +86,73 @@ describe('UsersRepository.findByIdentifier', () => {
     const uuid = '01890a5d-ac96-7000-8000-000000000001';
     findById.mockResolvedValue(row());
 
-    const result = await repository.findByIdentifier(uuid);
+    const result = await service.resolveRowByIdentifier(uuid);
 
     expect(result?.id).toBe(uuid);
     expect(findById).toHaveBeenCalledWith(uuid);
     expect(findByUsername).not.toHaveBeenCalled();
-    expect(findByEmailOrPhone).not.toHaveBeenCalled();
+    expect(findByEmailHmac).not.toHaveBeenCalled();
+    expect(findByPhoneHmac).not.toHaveBeenCalled();
   });
 
-  it('email 形状直达 findByEmailOrPhone（传入小写），不查 username', async () => {
-    findByEmailOrPhone.mockResolvedValue(row());
+  it('email 形状直达 HMAC 查找（邮箱小写后取 hmac），不查 username', async () => {
+    findByEmailHmac.mockResolvedValue(row());
 
-    const result = await repository.findByIdentifier('A@Example.com');
+    const result = await service.resolveRowByIdentifier('A@Example.com');
 
     expect(result?.id).toBe('01890a5d-ac96-7000-8000-000000000001');
-    expect(findByEmailOrPhone).toHaveBeenCalledWith('a@example.com');
+    expect(findByEmailHmac).toHaveBeenCalledWith('h:a@example.com');
     expect(findByUsername).not.toHaveBeenCalled();
   });
 
   it('普通 handle 先查 username（历史 handle 命中即返回），不查 phone/email', async () => {
     findByUsername.mockResolvedValue(row({ username: 'old-handle' }));
 
-    const result = await repository.findByIdentifier('old-handle');
+    const result = await service.resolveRowByIdentifier('old-handle');
 
     expect(result?.username).toBe('old-handle');
     expect(findByUsername).toHaveBeenCalledWith('old-handle');
-    expect(findByEmailOrPhone).not.toHaveBeenCalled();
+    expect(findByEmailHmac).not.toHaveBeenCalled();
     expect(findById).not.toHaveBeenCalled();
   });
 
   it('纯数字 username 命中：username 优先，不查 phone', async () => {
     findByUsername.mockResolvedValue(row({ username: '12345' }));
 
-    const result = await repository.findByIdentifier('12345');
+    const result = await service.resolveRowByIdentifier('12345');
 
     expect(result?.username).toBe('12345');
     expect(findByUsername).toHaveBeenCalledWith('12345');
-    expect(findByEmailOrPhone).not.toHaveBeenCalled();
+    expect(findByPhoneHmac).not.toHaveBeenCalled();
   });
 
-  it('纯数字 username 未命中：再按手机号查 findByEmailOrPhone', async () => {
+  it('纯数字 username 未命中：再按手机号原样取 hmac 查', async () => {
     findByUsername.mockResolvedValue(null);
-    findByEmailOrPhone.mockResolvedValue(row({ phone: '13800138000' }));
+    findByPhoneHmac.mockResolvedValue(row({ phone: '13800138000' }));
 
-    const result = await repository.findByIdentifier('13800138000');
+    const result = await service.resolveRowByIdentifier('13800138000');
 
     expect(result?.phone).toBe('13800138000');
     expect(findByUsername).toHaveBeenCalledWith('13800138000');
-    expect(findByEmailOrPhone).toHaveBeenCalledWith('13800138000');
+    expect(findByPhoneHmac).toHaveBeenCalledWith('h:13800138000');
   });
 
   it('全未命中返回 null', async () => {
-    const result = await repository.findByIdentifier('nobody');
+    const result = await service.resolveRowByIdentifier('nobody');
 
     expect(result).toBeNull();
     expect(findByUsername).toHaveBeenCalledWith('nobody');
-    expect(findByEmailOrPhone).not.toHaveBeenCalled();
+    expect(findByEmailHmac).not.toHaveBeenCalled();
+    expect(findByPhoneHmac).not.toHaveBeenCalled();
     expect(findById).not.toHaveBeenCalled();
   });
 
   it('空串直接返回 null，不触发任何查询', async () => {
-    expect(await repository.findByIdentifier('   ')).toBeNull();
+    expect(await service.resolveRowByIdentifier('   ')).toBeNull();
     expect(findById).not.toHaveBeenCalled();
     expect(findByUsername).not.toHaveBeenCalled();
-    expect(findByEmailOrPhone).not.toHaveBeenCalled();
+    expect(findByEmailHmac).not.toHaveBeenCalled();
+    expect(findByPhoneHmac).not.toHaveBeenCalled();
   });
 });
 

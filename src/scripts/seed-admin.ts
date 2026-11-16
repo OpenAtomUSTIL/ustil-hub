@@ -7,6 +7,7 @@ import { eq } from 'drizzle-orm';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { uniqueUsername } from '../common/utils/identifiers';
+import { CryptoService } from '../common/crypto/crypto.service';
 import { db } from '../db';
 import { users } from '../db/schema';
 import { UsersRepository } from '../modules/users/users.repository';
@@ -51,7 +52,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const existing = await db.query.users.findFirst({ where: eq(users.email, email) });
+  // 信封加密（v10.0）：邮箱列存 token，幂等检查走 HMAC 查找列；cryptoId 参与密钥派生
+  const crypto = new CryptoService(process.env.APP_ENCRYPTION_KEY ?? '');
+  const cryptoId = crypto.newCryptoId();
+  const emailHmac = crypto.hmac(email);
+
+  const existing = await db.query.users.findFirst({ where: eq(users.emailHmac, emailHmac) });
   if (existing) {
     console.log(`[seed-admin] 用户已存在，跳过：${email}`);
     return;
@@ -60,8 +66,9 @@ async function main(): Promise<void> {
   // ADMIN 全局唯一：已存在 ADMIN 但邮箱不同 → 报错退出
   const existingAdmin = await db.query.users.findFirst({ where: eq(users.role, 'ADMIN') });
   if (existingAdmin) {
+    const adminEmail = crypto.open('email', existingAdmin.email, existingAdmin.cryptoId ?? '');
     console.error(
-      `[seed-admin] 失败：已存在 ADMIN 账号（${existingAdmin.email ?? existingAdmin.id}），与 ADMIN_EMAIL 不一致`,
+      `[seed-admin] 失败：已存在 ADMIN 账号（${adminEmail ?? existingAdmin.id}），与 ADMIN_EMAIL 不一致`,
     );
     process.exit(1);
   }
@@ -70,7 +77,17 @@ async function main(): Promise<void> {
   const repository = new UsersRepository();
   const row = await repository.withUsernameLock(async (tx) => {
     const username = await uniqueUsername('admin', (name) => repository.usernameExists(name, tx));
-    return repository.insert({ email, phone: null, passwordHash, nickname: '管理员', username, role: 'ADMIN' }, tx);
+    return repository.insert({
+      email: crypto.seal('email', email, cryptoId),
+      phone: null,
+      cryptoId,
+      emailHmac,
+      phoneHmac: null,
+      passwordHash,
+      nickname: '管理员',
+      username,
+      role: 'ADMIN',
+    }, tx);
   });
 
   console.log(`[seed-admin] 已创建 ADMIN：${email}（id=${row.id}）`);

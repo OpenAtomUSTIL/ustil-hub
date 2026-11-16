@@ -10,6 +10,10 @@ export const envValidationSchema = Joi.object({
   REDIS_URL: Joi.string().required(),
   JWT_ACCESS_SECRET: Joi.string().min(16).required(),
   JWT_REFRESH_SECRET: Joi.string().min(16).required(),
+  // 个人信息信封加密主密钥（v10.0）：32 字节 base64，生成方式见 .env.example；不入库不进日志
+  APP_ENCRYPTION_KEY: Joi.string().base64().length(44)
+    .message('APP_ENCRYPTION_KEY 必须是 32 字节 base64（node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'base64\'))"）')
+    .required(),
   STORAGE_DRIVER: Joi.string().valid('local', 'r2').default('local'),
   STORAGE_LOCAL_DIR: Joi.string().default('./storage'),
   R2_ENDPOINT: Joi.string().allow('').when('STORAGE_DRIVER', {

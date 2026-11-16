@@ -7,6 +7,7 @@ import { JwtService } from '@nestjs/jwt';
 import request from 'supertest';
 import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter';
 import { appValidationPipe } from '../src/common/pipes/app-validation.pipe';
+import { CRYPTO_MASTER_KEY, CryptoService } from '../src/common/crypto/crypto.service';
 import { JwtAuthGuard } from '../src/common/guards/jwt-auth.guard';
 import { RolesGuard } from '../src/common/guards/roles.guard';
 import { Role } from '../src/common/decorators/roles.decorator';
@@ -86,6 +87,9 @@ describe('管理后台接口（守卫 e2e 冒烟）', () => {
       controllers: [AdminUsersController, InviteCodesController, StatsController],
       providers: [
         { provide: UsersService, useValue: usersService },
+        // v10.0 信封加密：CryptoService 真桩（行为确定利于断言），供模块内解析新依赖
+        { provide: CRYPTO_MASTER_KEY, useValue: 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=' },
+        CryptoService,
         { provide: InviteCodesService, useValue: inviteCodesService },
         { provide: InviteCodesRepository, useValue: inviteCodesRepository },
         StatsService,

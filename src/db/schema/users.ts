@@ -36,14 +36,19 @@ export const users = pgTable(
     // 最近活跃时间（在线用户统计用，请求拦截器节流更新）
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
     // 个人主页：短 bio + 长 README + 置顶内容
-    bio: varchar('bio', { length: 100 }),
+    // v10.0 起 bio/profileReadme/company/location/link/email/phone/socials 存信封 token（长度校验在输入层）
+    bio: text('bio'),
     profileReadme: text('profile_readme'),
     pinnedItems: jsonb('pinned_items').$type<{ type: string; id: string }[]>().default([]),
     // GitHub 式资料字段（v9.0）：公司/学校、所在地、个人链接、社交账户（公开可见）
-    company: varchar('company', { length: 100 }),
-    location: varchar('location', { length: 100 }),
-    link: varchar('link', { length: 200 }),
+    company: text('company'),
+    location: text('location'),
+    link: text('link'),
     socials: jsonb('socials').$type<string[]>().default([]),
+    // 信封加密（v10.0）：用户标识（参与密钥派生、信封 keyId）+ 精确查找 HMAC 列
+    cryptoId: varchar('crypto_id', { length: 32 }),
+    emailHmac: varchar('email_hmac', { length: 64 }),
+    phoneHmac: varchar('phone_hmac', { length: 64 }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()
@@ -51,12 +56,14 @@ export const users = pgTable(
       .$onUpdateFn(() => new Date()),
   },
   (t) => [
-    uniqueIndex('users_email_key').on(t.email),
+    // v10.0：email/phone 列存信封 token（随机 IV 恒唯一），唯一性约束迁到确定性 HMAC 查找列
+    uniqueIndex('users_email_hmac_key').on(t.emailHmac),
+    uniqueIndex('users_phone_hmac_key').on(t.phoneHmac),
+    uniqueIndex('users_crypto_id_key').on(t.cryptoId),
     uniqueIndex('users_username_key').on(t.username),
     index('users_last_seen_at_idx').on(t.lastSeenAt),
     index('users_avatar_updated_at_id_idx').on(t.updatedAt.desc().nullsFirst(), t.id.desc().nullsFirst())
       .where(sql`${t.avatarUrl} like '/api/v1/storage/files/_%'`),
-    uniqueIndex('users_phone_key').on(t.phone),
     index('users_role_idx').on(t.role),
     index('users_status_idx').on(t.status),
     index('users_invite_code_id_idx').on(t.inviteCodeId),

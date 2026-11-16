@@ -1,10 +1,12 @@
-/* 解析式寻址 e2e（v6.0）：uuid 之外支持 username / email / 手机号
+/* 解析式寻址 e2e（v6.0，v10.0 信封加密适配）：uuid 之外支持 username / email / 手机号
    - 日志筛选（request-logs userId / audit-logs actorId）与内容列表（authorId / creatorId）
      按标识命中→解析成 userId 过滤，未命中→空列表（过滤语义不报错）
    - 用户管理路径参数（改角色/提拔/剔除/封禁/解封）按标识命中成功，不存在→404
    - uuid 寻址回归不变；GET /auth/captcha 返回结构
-   风格同 guards/register：真实 controller + service，仓储打桩（标识→用户的解析链
-   在 users.repository.spec 单测覆盖，此处以标识映射表模拟用户表） */
+   风格同 guards/register：真实 controller + service，仓储打桩。v10.0 起解析链在
+   users.service.resolveRowByIdentifier（uuid → username → email_hmac → phone_hmac），
+   此处以查找列映射表（id/username/emailHmac/phoneHmac）模拟 users 表；行内 email/phone
+   为信封 token，库内不再有明文。 */
 import { INestApplication } from '@nestjs/common';
 import { HttpAdapterHost, APP_GUARD } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
@@ -13,6 +15,7 @@ import { JwtService } from '@nestjs/jwt';
 import request from 'supertest';
 import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter';
 import { appValidationPipe } from '../src/common/pipes/app-validation.pipe';
+import { CRYPTO_MASTER_KEY, CryptoService } from '../src/common/crypto/crypto.service';
 import { JwtAuthGuard } from '../src/common/guards/jwt-auth.guard';
 import { RolesGuard } from '../src/common/guards/roles.guard';
 import { Role } from '../src/common/decorators/roles.decorator';
@@ -71,8 +74,14 @@ const testConfig: AppConfig = {
   uploadMaxSize: 10485760,
 };
 
+/** 32 字节 base64 测试主密钥（仅测试进程使用；格式同 .env.example 的 APP_ENCRYPTION_KEY） */
+const TEST_ENCRYPTION_KEY = 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=';
+const testCrypto = new CryptoService(TEST_ENCRYPTION_KEY);
+
 const TARGET_ID = '01890a5d-ac96-7000-8000-000000000001';
+const TARGET_CRYPTO_ID = 'aa11bb22cc33dd44ee55ff6677889900';
 const UUID_TARGET_ID = '01890a5d-ac96-7000-8000-000000000009';
+const UUID_CRYPTO_ID = 'bb22cc33dd44ee55ff66778899000011';
 
 describe('解析式寻址（v6.0 e2e）', () => {
   let app: INestApplication;
@@ -80,11 +89,19 @@ describe('解析式寻址（v6.0 e2e）', () => {
 
   const now = new Date('2026-01-01T00:00:00.000Z');
 
+  /** 构造 users 行桩数据：入参 email/phone 为明文，落库形态为信封 token + HMAC 查找列（v10.0） */
   function row(overrides: Partial<UserRow> = {}): UserRow {
+    const { email, phone, ...rest } = overrides;
+    const cryptoId = overrides.cryptoId ?? TARGET_CRYPTO_ID;
+    const emailValue = email === undefined ? 'a@example.com' : email;
+    const phoneValue = phone === undefined ? '13800138000' : phone;
     return {
       id: TARGET_ID,
-      email: 'a@example.com',
-      phone: '13800138000',
+      cryptoId,
+      email: emailValue ? testCrypto.seal('email', emailValue, cryptoId) : null,
+      emailHmac: emailValue ? testCrypto.hmac(emailValue) : null,
+      phone: phoneValue ? testCrypto.seal('phone', phoneValue, cryptoId) : null,
+      phoneHmac: phoneValue ? testCrypto.hmac(phoneValue) : null,
       passwordHash: 'hash',
       nickname: '测试用户',
       username: 'alice',
@@ -95,17 +112,35 @@ describe('解析式寻址（v6.0 e2e）', () => {
       sessionVersion: 0,
       createdAt: now,
       updatedAt: now,
-      ...overrides,
+      ...rest,
     } as UserRow;
   }
 
-  // 标识 → 用户映射表（模拟 users 表；解析顺序本身由 users.repository.spec 覆盖）
-  const usersByIdentifier = new Map<string, UserRow>([
-    [TARGET_ID, row()],
-    [UUID_TARGET_ID, row({ id: UUID_TARGET_ID, username: 'bob', email: 'b@example.com', phone: '13800138001' })],
-    ['alice', row()],
-    ['a@example.com', row()],
-    ['13800138000', row()],
+  // 查找列映射表（模拟 users 表；解析链 uuid → username → email_hmac → phone_hmac 在
+  // users.service.resolveRowByIdentifier，此处按查找列提供命中）
+  const targetRow = row();
+  const uuidRow = row({
+    id: UUID_TARGET_ID,
+    cryptoId: UUID_CRYPTO_ID,
+    username: 'bob',
+    email: 'b@example.com',
+    phone: '13800138001',
+  });
+  const usersById = new Map<string, UserRow>([
+    [TARGET_ID, targetRow],
+    [UUID_TARGET_ID, uuidRow],
+  ]);
+  const usersByUsername = new Map<string, UserRow>([
+    ['alice', targetRow],
+    ['bob', uuidRow],
+  ]);
+  const usersByEmailHmac = new Map<string, UserRow>([
+    [testCrypto.hmac('a@example.com'), targetRow],
+    [testCrypto.hmac('b@example.com'), uuidRow],
+  ]);
+  const usersByPhoneHmac = new Map<string, UserRow>([
+    [testCrypto.hmac('13800138000'), targetRow],
+    [testCrypto.hmac('13800138001'), uuidRow],
   ]);
   const actorsById = new Map<string, UserRow>([
     ['user-admin', row({ id: 'user-admin', role: Role.ADMIN, username: 'admin' })],
@@ -116,9 +151,10 @@ describe('解析式寻址（v6.0 e2e）', () => {
 
   const usersRepository = {
     findById: jest.fn(),
-    findByIdentifier: jest.fn(),
     findByUsername: jest.fn(),
-    findByEmailOrPhone: jest.fn(),
+    findByEmailHmacOrPhoneHmac: jest.fn(),
+    findByEmailHmac: jest.fn(),
+    findByPhoneHmac: jest.fn(),
     findByIds: jest.fn(),
     updateRole: jest.fn(),
     updateStatus: jest.fn(),
@@ -172,6 +208,8 @@ describe('解析式寻址（v6.0 e2e）', () => {
         IssuesService,
         ResourcesService,
         { provide: UsersRepository, useValue: usersRepository },
+        { provide: CRYPTO_MASTER_KEY, useValue: TEST_ENCRYPTION_KEY },
+        CryptoService,
         { provide: RequestLogsRepository, useValue: requestLogsRepository },
         { provide: AuditLogRepository, useValue: auditLogRepository },
         { provide: LoginLogsRepository, useValue: loginLogsRepository },
@@ -208,10 +246,20 @@ describe('解析式寻址（v6.0 e2e）', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     usersRepository.findById.mockImplementation(async (id: string) =>
-      actorsById.get(id) ?? usersByIdentifier.get(id) ?? null,
+      actorsById.get(id) ?? usersById.get(id) ?? null,
     );
-    usersRepository.findByIdentifier.mockImplementation(async (v: string) =>
-      usersByIdentifier.get(v.trim()) ?? null,
+    usersRepository.findByUsername.mockImplementation(async (v: string) =>
+      usersByUsername.get(v.trim()) ?? null,
+    );
+    usersRepository.findByEmailHmac.mockImplementation(async (hmac: string) =>
+      usersByEmailHmac.get(hmac) ?? null,
+    );
+    usersRepository.findByPhoneHmac.mockImplementation(async (hmac: string) =>
+      usersByPhoneHmac.get(hmac) ?? null,
+    );
+    usersRepository.findByEmailHmacOrPhoneHmac.mockImplementation(
+      async (emailHmac: string, phoneHmac: string) =>
+        usersByEmailHmac.get(emailHmac) ?? usersByPhoneHmac.get(phoneHmac) ?? null,
     );
     requestLogsRepository.list.mockResolvedValue({ rows: [], total: 0 });
     auditLogRepository.list.mockResolvedValue({ rows: [], total: 0 });

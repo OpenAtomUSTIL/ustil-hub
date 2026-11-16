@@ -5,7 +5,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { plainToInstance } from 'class-transformer';
+import { validate } from 'class-validator';
 import { Role } from '../../common/decorators/roles.decorator';
+import { CryptoService } from '../../common/crypto/crypto.service';
 import { REFRESH_TOKEN_STORE } from '../../db/redis';
 import { UserStatus } from '../../db/schema';
 import { AuditLogService } from '../audit/audit-log.service';
@@ -13,6 +16,7 @@ import { CaptchaService } from '../captcha/captcha.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UploadsService } from '../storage/uploads.service';
 import { hashPassword } from '../auth/password';
+import { UpdateProfilePageDto } from './dto/update-profile-page.dto';
 import { UsersRepository, UserRow } from './users.repository';
 import { UsersService, computeStreak } from './users.service';
 
@@ -25,6 +29,7 @@ function row(overrides: Partial<UserRow> = {}): UserRow {
     id: '01890a5d-ac96-7000-8000-000000000001',
     email: 'a@example.com',
     phone: null,
+    cryptoId: 'a'.repeat(32),
     passwordHash: 'hash',
     nickname: '测试用户',
     username: 'testuser',
@@ -38,6 +43,16 @@ function row(overrides: Partial<UserRow> = {}): UserRow {
   } as UserRow;
 }
 
+// CryptoService 打桩（v10.0）：seal 加 'v1.test.' 前缀、open 去前缀还原，hmac 加 'h:' 前缀，cryptoId 固定 32 位
+const cryptoStub = {
+  newCryptoId: (): string => 'a'.repeat(32),
+  seal: (_purpose: string, plaintext: string | null | undefined): string | null =>
+    plaintext ? 'v1.test.' + plaintext : null,
+  open: (_purpose: string, token: string | null | undefined): string | null =>
+    token ? token.replace('v1.test.', '') : null,
+  hmac: (plaintext: string): string => 'h:' + plaintext,
+};
+
 const transaction = {};
 
 describe('UsersService', () => {
@@ -49,7 +64,9 @@ describe('UsersService', () => {
     findById: jest.fn(),
     findByUsername: jest.fn(),
     findByIdOrUsername: jest.fn(),
-    findByIdentifier: jest.fn(),
+    findByEmailHmacOrPhoneHmac: jest.fn(),
+    findByEmailHmac: jest.fn(),
+    findByPhoneHmac: jest.fn(),
     usernameExists: jest.fn(),
     updateUsername: jest.fn(),
     insertFollow: jest.fn(),
@@ -60,7 +77,6 @@ describe('UsersService', () => {
     listFollowing: jest.fn(),
     filterFollowedIds: jest.fn(),
     findByIds: jest.fn(),
-    findByEmailOrPhone: jest.fn(),
     updateProfile: jest.fn(),
     updateIdentifier: jest.fn(),
     updatePasswordHash: jest.fn(),
@@ -112,10 +128,10 @@ describe('UsersService', () => {
     usersRepository.findByIdOrUsername.mockImplementation((v: string) =>
       usersRepository.findById(v),
     );
-    // 解析式寻址（v6.0）：管理操作路径参数走 findByIdentifier，委托 findById 保持既有用例语义
-    usersRepository.findByIdentifier.mockImplementation((v: string) =>
-      usersRepository.findById(v),
-    );
+    // HMAC 查找原语默认未命中（uuid 寻址用例只走 findById）
+    usersRepository.findByEmailHmacOrPhoneHmac.mockResolvedValue(null);
+    usersRepository.findByEmailHmac.mockResolvedValue(null);
+    usersRepository.findByPhoneHmac.mockResolvedValue(null);
     usersRepository.getFollowCounts.mockResolvedValue({ followers: 0, following: 0 });
     usersRepository.isFollowing.mockResolvedValue(false);
     usersRepository.filterFollowedIds.mockResolvedValue(new Set());
@@ -123,6 +139,7 @@ describe('UsersService', () => {
       providers: [
         UsersService,
         { provide: UsersRepository, useValue: usersRepository },
+        { provide: CryptoService, useValue: cryptoStub },
         { provide: UploadsService, useValue: uploadsService },
         { provide: NotificationsService, useValue: notificationsService },
         { provide: AuditLogService, useValue: auditLogService },
@@ -164,6 +181,85 @@ describe('UsersService', () => {
       }),
     ).rejects.toThrow(BadRequestException);
     expect(usersRepository.updateIdentifier).not.toHaveBeenCalled();
+  });
+
+  it('createUser：标识 seal 入库并写 cryptoId 与 HMAC 查找列（v10.0）', async () => {
+    usersRepository.insert.mockResolvedValue(row());
+
+    await service.createUser({
+      email: 'A@Example.com',
+      phone: null,
+      passwordHash: 'hash',
+      nickname: '测试用户',
+    });
+
+    // 邮箱取 normalizeIdentifier 归一化（小写）后 seal + hmac；手机号 null 直通
+    expect(usersRepository.insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cryptoId: 'a'.repeat(32),
+        email: 'v1.test.a@example.com',
+        emailHmac: 'h:a@example.com',
+        phone: null,
+        phoneHmac: null,
+      }),
+      transaction,
+    );
+
+    usersRepository.insert.mockResolvedValue(row({ email: null, phone: '13800138000' }));
+    await service.createUser({
+      phone: '13800138000',
+      passwordHash: 'hash',
+      nickname: '测试用户',
+    });
+    // 手机号原样 seal + hmac
+    expect(usersRepository.insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: null,
+        emailHmac: null,
+        phone: 'v1.test.13800138000',
+        phoneHmac: 'h:13800138000',
+      }),
+      transaction,
+    );
+  });
+
+  it('登录查找：identifier 归一化后按 HMAC 查找列精确匹配（v10.0）', async () => {
+    usersRepository.findByEmailHmacOrPhoneHmac.mockResolvedValue(row());
+
+    const record = await service.findByIdentifier('A@Example.com');
+
+    expect(usersRepository.findByEmailHmacOrPhoneHmac).toHaveBeenCalledWith(
+      'h:a@example.com',
+      'h:a@example.com',
+    );
+    // UserAuthRecord 仍是明文视图（解密后）
+    expect(record?.email).toBe('a@example.com');
+  });
+
+  it('换绑邮箱：新值 seal + HMAC 更新，另一标识与其 HMAC 同步清空（v10.0）', async () => {
+    usersRepository.findById.mockResolvedValue(
+      row({ passwordHash: await hashPassword('password123') }),
+    );
+    usersRepository.findByEmailHmac.mockResolvedValue(null);
+    usersRepository.updateIdentifier.mockResolvedValue(row());
+
+    await service.changeIdentifier('01890a5d-ac96-7000-8000-000000000001', {
+      captchaId: 'captcha-1',
+      captchaCode: 'ABCDE',
+      type: 'email',
+      value: 'new@example.com',
+      password: 'password123',
+    });
+
+    expect(usersRepository.updateIdentifier).toHaveBeenCalledWith(
+      '01890a5d-ac96-7000-8000-000000000001',
+      {
+        email: 'v1.test.new@example.com',
+        phone: null,
+        emailHmac: 'h:new@example.com',
+        phoneHmac: null,
+      },
+    );
   });
 
   it('封禁：状态置为 BANNED 并吊销全部 refresh', async () => {
@@ -400,7 +496,7 @@ describe('UsersService', () => {
     expect(usersRepository.updateProfilePage).not.toHaveBeenCalled();
   });
 
-  it('更新主页：资料字段（v9.0）超长/超量返回 400，合法值透传', async () => {
+  it('更新主页：资料字段（v9.0）超长/超量返回 400，写入走信封 seal（v10.0）', async () => {
     await expect(
       service.updateProfilePage('01890a5d-ac96-7000-8000-000000000001', { company: 'x'.repeat(101) }),
     ).rejects.toThrow(BadRequestException);
@@ -413,18 +509,23 @@ describe('UsersService', () => {
       }),
     ).rejects.toThrow(BadRequestException);
 
+    usersRepository.findById.mockResolvedValue(row());
     usersRepository.updateProfilePage.mockResolvedValue(row());
     await service.updateProfilePage('01890a5d-ac96-7000-8000-000000000001', {
       company: '沈阳工业大学',
       location: '辽宁沈阳',
       link: 'geminimortal.cn',
-      socials: ['https://github.com/GeminiMortal'],
+      socials: ['https://github.com/GeminiMortal', ''],
     });
+    // 资料字段共用 'profile' 用途域 seal；socials 逐条 seal('social')，空串→null 条目原位保留
     expect(usersRepository.updateProfilePage).toHaveBeenCalledWith('01890a5d-ac96-7000-8000-000000000001', {
-      company: '沈阳工业大学',
-      location: '辽宁沈阳',
-      link: 'geminimortal.cn',
-      socials: ['https://github.com/GeminiMortal'],
+      bio: undefined,
+      profileReadme: undefined,
+      pinnedItems: undefined,
+      company: 'v1.test.沈阳工业大学',
+      location: 'v1.test.辽宁沈阳',
+      link: 'v1.test.geminimortal.cn',
+      socials: ['v1.test.https://github.com/GeminiMortal', null],
     });
   });
 
@@ -469,6 +570,7 @@ describe('UsersService', () => {
     usersRepository.findPinnedTargets.mockResolvedValue([
       { type: 'ARTICLE', id: 'mine', title: '我的文章', ownerId: '01890a5d-ac96-7000-8000-000000000001' },
     ]);
+    usersRepository.findById.mockResolvedValue(row());
     usersRepository.updateProfilePage.mockResolvedValue(row());
 
     await service.updateProfilePage('01890a5d-ac96-7000-8000-000000000001', {
@@ -476,7 +578,13 @@ describe('UsersService', () => {
     });
 
     expect(usersRepository.updateProfilePage).toHaveBeenCalledWith('01890a5d-ac96-7000-8000-000000000001', {
+      bio: undefined,
+      profileReadme: undefined,
       pinnedItems: [{ type: 'ARTICLE', id: 'mine' }],
+      company: undefined,
+      location: undefined,
+      link: undefined,
+      socials: undefined,
     });
   });
 
@@ -705,4 +813,52 @@ describe('UsersService', () => {
     expect(refreshStore.revokeAll).toHaveBeenCalledTimes(1);
   });
 
+});
+
+/** 信封加密（v10.0）：CryptoService 真实实现的往返、null 直通与拒绝语义 */
+describe('CryptoService 信封往返与 null 直通（v10.0）', () => {
+  const crypto = new CryptoService(Buffer.alloc(32, 7).toString('base64'));
+  const cryptoId = crypto.newCryptoId();
+
+  it('seal→open 往返还原明文，hmac 确定性且 64 位 hex', () => {
+    const token = crypto.seal('email', 'A@Example.com', cryptoId);
+    expect(token).toMatch(/^v1\./);
+    expect(crypto.open('email', token, cryptoId)).toBe('A@Example.com');
+    expect(crypto.hmac('a@example.com')).toBe(crypto.hmac('a@example.com'));
+    expect(crypto.hmac('a@example.com')).toHaveLength(64);
+  });
+
+  it('null/空串直通：seal 返回 null，open 对空值与非信封值返回 null', () => {
+    expect(crypto.seal('profile', null, cryptoId)).toBeNull();
+    expect(crypto.seal('profile', '', cryptoId)).toBeNull();
+    expect(crypto.open('profile', null, cryptoId)).toBeNull();
+    expect(crypto.open('profile', '', cryptoId)).toBeNull();
+    expect(crypto.open('profile', 'plain-text', cryptoId)).toBeNull();
+  });
+
+  it('跨用途/跨用户挪用/篡改密文一律拒绝返回 null', () => {
+    const token = crypto.seal('email', 'a@example.com', cryptoId);
+    if (!token) {
+      throw new Error('seal 不应返回 null');
+    }
+    const corrupted = token.slice(0, -1) + (token.endsWith('a') ? 'b' : 'a');
+    expect(crypto.open('phone', token, cryptoId)).toBeNull();
+    expect(crypto.open('email', token, crypto.newCryptoId())).toBeNull();
+    expect(crypto.open('email', corrupted, cryptoId)).toBeNull();
+  });
+});
+
+/** UpdateProfilePageDto.socials（v10.0 修复）：非字符串条目不再被静默丢弃 */
+describe('UpdateProfilePageDto.socials 校验（v10.0 修复）', () => {
+  it('非字符串条目保留并由 @IsString 报错（[123,null,\'ok\'] 拒绝）', async () => {
+    const dto = plainToInstance(UpdateProfilePageDto, { socials: [123, null, 'ok'] });
+    const errors = await validate(dto);
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('字符串条目 trim 并剔除空串', async () => {
+    const dto = plainToInstance(UpdateProfilePageDto, { socials: ['  a  ', '', '   ', 'b'] });
+    expect(dto.socials).toEqual(['a', 'b']);
+    expect(await validate(dto)).toEqual([]);
+  });
 });

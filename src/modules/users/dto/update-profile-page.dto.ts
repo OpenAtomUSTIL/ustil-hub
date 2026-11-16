@@ -47,12 +47,13 @@ export class UpdateProfilePageDto {
   @MaxLength(200, { message: '个人链接不能超过 200 个字符' })
   link?: string | null;
 
-  // 社交账户：≤4 条、每条 ≤200，空串条目在转换时剔除
+  // 社交账户：≤4 条、每条 ≤200；字符串条目 trim 并剔除空串，非字符串原样保留交由 @IsString 报 400
+  //（v10.0 修复：不再把非字符串条目静默丢弃——[123,null,'ok'] 必须校验失败）
   @Transform(({ value }: { value: unknown }) =>
     Array.isArray(value)
       ? value
           .map((item) => (typeof item === 'string' ? item.trim() : item))
-          .filter((item): item is string => typeof item === 'string' && item.length > 0)
+          .filter((item) => typeof item !== 'string' || item.length > 0)
       : value,
   )
   @IsOptional()

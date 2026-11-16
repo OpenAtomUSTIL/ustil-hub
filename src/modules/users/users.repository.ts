@@ -1,6 +1,5 @@
 import { isValidStorageKey } from '../storage/storage.types';
 import { Injectable } from '@nestjs/common';
-import { isEmail, isMobilePhone } from 'class-validator';
 import { and, desc, eq, gte, ilike, inArray, isNull, like, lt, ne, or, sql } from 'drizzle-orm';
 import { db, Database, type DatabaseTransaction } from '../../db';
 import {
@@ -69,7 +68,9 @@ export class UsersRepository {
       fileName: sql<string>`substring(${users.avatarUrl} from 23)`.as('file_name'),
       size: sql<number>`0::integer`.as('size'),
       uploaderId: sql<string>`${users.id}`.as('uploader_id'),
-      email: users.email,
+      // v10.0：email 列是信封 token 不允许流出；此处仅 null 占位保持 union 列形一致，
+      // 展示邮箱由调用方经 getEmailsByIds 解密回填
+      email: sql<string | null>`null::text`.as('email'),
       createdAt: sql`${users.updatedAt}`.mapWith(users.updatedAt).as('created_at'),
     }).from(users).where(and(
       like(users.avatarUrl, '/api/v1/storage/files/_%'),
@@ -88,6 +89,10 @@ export class UsersRepository {
   async insert(row: {
     email: string | null;
     phone: string | null;
+    // 信封加密（v10.0）：email/phone 传入信封 token，cryptoId 参与密钥派生，hmac 列供精确查找/唯一约束
+    cryptoId: string;
+    emailHmac: string | null;
+    phoneHmac: string | null;
     passwordHash: string;
     nickname: string;
     username: string;
@@ -120,22 +125,6 @@ export class UsersRepository {
 
   async findByIdOrUsername(value: string): Promise<UserRow | null> {
     return isUuid(value) ? this.findById(value) : this.findByUsername(value);
-  }
-
-  /**
-   * 解析式寻址（v6.0）：uuid → username（含历史 handle）→ email → phone，顺序即优先级。
-   * email 形状与 username 不撞形（USERNAME_RE 不含 @）可直达；纯数字可能与 username 撞形，username 优先。
-   * 未命中返回 null，语义由调用方决定（过滤类→空列表，路径参数类→404）。
-   */
-  async findByIdentifier(value: string): Promise<UserRow | null> {
-    const trimmed = value.trim();
-    if (!trimmed) return null;
-    if (isUuid(trimmed)) return this.findById(trimmed);
-    if (isEmail(trimmed)) return this.findByEmailOrPhone(trimmed.toLowerCase());
-    const byUsername = await this.findByUsername(trimmed);
-    if (byUsername) return byUsername;
-    if (isMobilePhone(trimmed, 'zh-CN')) return this.findByEmailOrPhone(trimmed);
-    return null;
   }
 
   /** 占用检查含历史 handle（旧 handle 不可被他人抢占） */
@@ -184,11 +173,30 @@ export class UsersRepository {
     return db.select().from(users).where(inArray(users.id, ids));
   }
 
-  async findByEmailOrPhone(identifier: string): Promise<UserRow | null> {
+  /** 精确查找（v10.0）：email/phone 列为信封 token，查询走确定性 HMAC 查找列 */
+  async findByEmailHmacOrPhoneHmac(emailHmac: string, phoneHmac: string): Promise<UserRow | null> {
     const rows = await db
       .select()
       .from(users)
-      .where(or(eq(users.email, identifier), eq(users.phone, identifier)))
+      .where(or(eq(users.emailHmac, emailHmac), eq(users.phoneHmac, phoneHmac)))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  async findByEmailHmac(emailHmac: string): Promise<UserRow | null> {
+    const rows = await db
+      .select()
+      .from(users)
+      .where(eq(users.emailHmac, emailHmac))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  async findByPhoneHmac(phoneHmac: string): Promise<UserRow | null> {
+    const rows = await db
+      .select()
+      .from(users)
+      .where(eq(users.phoneHmac, phoneHmac))
       .limit(1);
     return rows[0] ?? null;
   }
@@ -207,7 +215,14 @@ export class UsersRepository {
 
   async updateIdentifier(
     id: string,
-    patch: { email: string | null; phone: string | null },
+    patch: {
+      email: string | null;
+      phone: string | null;
+      // 换绑（v10.0）：hmac 查找列与信封 token 同步更新/清空；cryptoId 仅在存量行缺失时补写
+      emailHmac: string | null;
+      phoneHmac: string | null;
+      cryptoId?: string;
+    },
   ): Promise<UserRow | null> {
     const rows = await db
       .update(users)
@@ -247,12 +262,11 @@ export class UsersRepository {
     const conditions = [];
     if (params.keyword) {
       const pattern = `%${params.keyword}%`;
+      // 模糊搜只搜昵称/用户名（v10.0 已拍板）：email/phone 加密后不可 ilike，退出 keyword 模糊搜
       conditions.push(
         or(
           ilike(users.nickname, pattern),
           ilike(users.username, pattern),
-          ilike(users.email, pattern),
-          ilike(users.phone, pattern),
         ),
       );
     }
@@ -520,24 +534,27 @@ export class UsersRepository {
     return referenced;
   }
 
-  // 关键字模糊搜用户 id（管理端评论按作者搜索用），上限 100
+  // 关键字模糊搜用户 id（管理端评论按作者搜索用），上限 100；v10.0 邮箱加密后退出模糊搜，只搜昵称
   async searchIdsByKeyword(keyword: string): Promise<string[]> {
     const pattern = `%${keyword.trim()}%`;
     const rows = await db
       .select({ id: users.id })
       .from(users)
-      .where(or(ilike(users.nickname, pattern), ilike(users.email, pattern)))
+      .where(ilike(users.nickname, pattern))
       .limit(100);
     return rows.map((row) => row.id);
   }
 
-  // 管理端展示上传者邮箱用（快照场景）
-  async findEmailsByIds(ids: string[]): Promise<Map<string, string | null>> {
+  // 管理端展示上传者邮箱用（快照场景）；v10.0 连同 cryptoId 供 service 解密
+  async findEmailsByIds(ids: string[]): Promise<Map<string, { email: string | null; cryptoId: string | null }>> {
     if (ids.length === 0) {
       return new Map();
     }
-    const rows = await db.select({ id: users.id, email: users.email }).from(users).where(inArray(users.id, ids));
-    return new Map(rows.map((row) => [row.id, row.email]));
+    const rows = await db
+      .select({ id: users.id, email: users.email, cryptoId: users.cryptoId })
+      .from(users)
+      .where(inArray(users.id, ids));
+    return new Map(rows.map((row) => [row.id, { email: row.email, cryptoId: row.cryptoId }]));
   }
 
   async updateProfilePage(
@@ -549,12 +566,18 @@ export class UsersRepository {
       company?: string | null;
       location?: string | null;
       link?: string | null;
-      socials?: string[] | null;
+      // socials 逐条信封 token（v10.0）：空串 seal 为 null 条目原位保留，读取侧过滤；cryptoId 仅存量行缺失时补写
+      socials?: (string | null)[] | null;
+      cryptoId?: string;
     },
   ): Promise<UserRow | null> {
     const rows = await db
       .update(users)
-      .set(patch)
+      .set({
+        ...patch,
+        // jsonb 列声明 string[]，null 条目（空串 seal 产物）以收窄断言入库
+        socials: patch.socials as string[] | null | undefined,
+      })
       .where(eq(users.id, id))
       .returning();
     return rows[0] ?? null;

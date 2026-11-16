@@ -5,6 +5,7 @@ import cookieParser from 'cookie-parser';
 import { JwtService } from '@nestjs/jwt';
 import request from 'supertest';
 import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter';
+import { CRYPTO_MASTER_KEY, CryptoService } from '../src/common/crypto/crypto.service';
 import { CurrentAuthUser, CurrentUser } from '../src/common/decorators/current-user.decorator';
 import { Public } from '../src/common/decorators/public.decorator';
 import { Role, Roles } from '../src/common/decorators/roles.decorator';
@@ -99,6 +100,9 @@ describe('JwtAuthGuard / RolesGuard（e2e 冒烟）', () => {
       providers: [
         JwtStrategy,
         { provide: UsersService, useValue: usersService },
+        // v10.0 信封加密：CryptoService 真桩，供模块内解析新依赖
+        { provide: CRYPTO_MASTER_KEY, useValue: 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=' },
+        CryptoService,
         { provide: configuration.KEY, useValue: testConfig },
         { provide: JwtService, useValue: new JwtService({ secret: testConfig.jwtAccessSecret }) },
         { provide: APP_GUARD, useClass: JwtAuthGuard },

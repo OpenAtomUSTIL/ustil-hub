@@ -40,6 +40,7 @@
 - **时间**：一律 ISO 8601 UTC 字符串（`2026-11-09T03:04:10.212Z`）。
 - **校验**：全局 `ValidationPipe` 开启 `whitelist + forbidNonWhitelisted`，请求体中出现未声明字段直接 400。
 - **标题与昵称**：创建、更新时去除首尾空白后校验；纯空白返回 400，标题最长 200 字符、昵称最长 50 字符。
+- **个人字段信封加密（v10.0）**：服务端库内对用户个人字段（`email`/`phone`/`bio`/`company`/`location`/`link`/`socials`/`profileReadme`）做信封加密存储（AES-256-GCM，配 `email_hmac`/`phone_hmac` 精确查找列）；**API 契约不变**——请求/响应仍为明文，加解密仅在服务端内部完成，本文件所有接口语义不受影响。
 - **slug 寻址（去 id 化）**：文章 / 作业 / 公告 / 资源 / Issue 创建时由标题生成唯一 slug（URL 不暴露裸 id）。
   **读接口**（详情类 `GET .../:id`）的 `:id` 可传 **uuid 或 slug**（uuid 优先匹配）；**写接口**（编辑 / 删除 / 审核 / 状态变更 / 回复 / 提交）仅接受 uuid，传 slug 返回 400。
   用户**读接口**（2.8 / 2.9 等）`:id` 可传 **uuid 或 username**；用户**管理类路径参数**（2.6 封禁 / 2.7 解封 / 11.2 改角色 / 11.3 提前提拔 / 11.4 剔除学员）支持 **uuid / username / email / phone** 四种标识（解析式寻址，uuid 优先：uuid → username（含历史 handle）→ email → phone），解析不到返回 `404`「用户不存在」。
@@ -792,7 +793,7 @@ TagView = { id: string; name: string; count: number }
 ### 11.1 用户列表 `GET /api/v1/admin/users`
 
 - 权限：🛡️ `WHEEL`、`ADMIN`
-- 查询参数：`page`、`pageSize`、`keyword`（≤100，模糊匹配昵称/用户名/邮箱/手机号）、`role`、`status`（`ACTIVE | BANNED`）
+- 查询参数：`page`、`pageSize`、`keyword`（≤100，模糊匹配昵称/用户名——v10.0 起邮箱/手机号库内为密文，退出 keyword 模糊搜；精确寻址仍走 hmac 查找列，不受影响）、`role`、`status`（`ACTIVE | BANNED`）
 - 成功：`200`，返回 `AdminUserPage`（联系方式脱敏）
   ```ts
   AdminUserView = {

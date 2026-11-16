@@ -67,7 +67,7 @@ export class AdminFilesService {
       kind: row.kind, id: `${AVATAR_ID_PREFIX}${row.id}`,
       fileName: row.key, createdAt: row.createdAt,
       avatar: {
-        userId: row.id, key: row.key, email: row.email, updatedAt: row.createdAt,
+        userId: row.id, key: row.key, email: null, updatedAt: row.createdAt,
       },
     });
 
@@ -81,11 +81,15 @@ export class AdminFilesService {
     const [usedBySubmissions, referencedKeys, uploaderEmails, avatarSizes] = await Promise.all([
       this.assignmentsService.listUsedAttachmentIds(attachmentIds),
       this.usersService.findAvatarReferencedKeys(attachmentKeys),
-      this.usersService.getEmailsByIds(
-        entries
+      this.usersService.getEmailsByIds([
+        ...entries
           .filter((entry) => entry.attachment)
           .map((entry) => (entry.attachment as AttachmentRow).uploaderId),
-      ),
+        // 头像条目邮箱也经解密映射回填（库内为信封 token，禁止直出）
+        ...entries
+          .filter((entry) => entry.avatar)
+          .map((entry) => (entry.avatar as AvatarFileRef).userId),
+      ]),
       Promise.all(
         entries
           .filter((entry) => entry.avatar)
@@ -97,6 +101,7 @@ export class AdminFilesService {
     for (const entry of entries) {
       if (entry.avatar) {
         avatarSizeByKey.set(entry.avatar.key, avatarSizes[sizeIndex] ?? 0);
+        entry.avatar.email = uploaderEmails.get(entry.avatar.userId) ?? null;
         sizeIndex += 1;
       }
     }

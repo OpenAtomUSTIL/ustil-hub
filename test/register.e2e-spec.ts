@@ -11,6 +11,7 @@ import { JwtService } from '@nestjs/jwt';
 import request from 'supertest';
 import { AllExceptionsFilter } from '../src/common/filters/all-exceptions.filter';
 import { appValidationPipe } from '../src/common/pipes/app-validation.pipe';
+import { CRYPTO_MASTER_KEY, CryptoService } from '../src/common/crypto/crypto.service';
 import { JwtAuthGuard } from '../src/common/guards/jwt-auth.guard';
 import { RolesGuard } from '../src/common/guards/roles.guard';
 import { Role } from '../src/common/decorators/roles.decorator';
@@ -59,6 +60,12 @@ const testConfig: AppConfig = {
   uploadMaxSize: 10485760,
 };
 
+/** 32 字节 base64 测试主密钥（仅测试进程使用；格式同 .env.example 的 APP_ENCRYPTION_KEY） */
+const TEST_ENCRYPTION_KEY = 'MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=';
+const testCrypto = new CryptoService(TEST_ENCRYPTION_KEY);
+/** 固定 cryptoId（32 hex），便于断言信封 token 与 HMAC 查找列 */
+const SELF_CRYPTO_ID = 'aa11bb22cc33dd44ee55ff6677889900';
+
 const SELF_ID = '01890a5d-ac96-7000-8000-000000000001';
 
 describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => {
@@ -73,8 +80,9 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
     insert: jest.fn(),
     findById: jest.fn(),
     findByUsername: jest.fn(),
-    findByEmailOrPhone: jest.fn(),
-    findByIdentifier: jest.fn(),
+    findByEmailHmacOrPhoneHmac: jest.fn(),
+    findByEmailHmac: jest.fn(),
+    findByPhoneHmac: jest.fn(),
     applyInviteCode: jest.fn(),
     updateIdentifier: jest.fn(),
     updatePasswordHash: jest.fn(),
@@ -96,11 +104,19 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
     revokeAll: jest.fn(),
   };
 
+  /** 构造 users 行桩数据：入参 email/phone 为明文，落库形态为信封 token + HMAC 查找列（v10.0） */
   function row(overrides: Partial<UserRow> = {}): UserRow {
+    const { email, phone, ...rest } = overrides;
+    const cryptoId = overrides.cryptoId ?? SELF_CRYPTO_ID;
+    const emailValue = email === undefined ? 'a@example.com' : email;
+    const phoneValue = phone === undefined ? null : phone;
     return {
       id: SELF_ID,
-      email: 'a@example.com',
-      phone: null,
+      cryptoId,
+      email: emailValue ? testCrypto.seal('email', emailValue, cryptoId) : null,
+      emailHmac: emailValue ? testCrypto.hmac(emailValue) : null,
+      phone: phoneValue ? testCrypto.seal('phone', phoneValue, cryptoId) : null,
+      phoneHmac: phoneValue ? testCrypto.hmac(phoneValue) : null,
       passwordHash,
       nickname: '测试用户',
       username: 'testuser',
@@ -111,7 +127,7 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
       sessionVersion: 0,
       createdAt: new Date('2026-01-01T00:00:00.000Z'),
       updatedAt: new Date('2026-01-01T00:00:00.000Z'),
-      ...overrides,
+      ...rest,
     } as UserRow;
   }
 
@@ -158,6 +174,8 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
         InviteCodesService,
         { provide: UsersRepository, useValue: usersRepository },
         { provide: InviteCodesRepository, useValue: inviteCodesRepository },
+        { provide: CRYPTO_MASTER_KEY, useValue: TEST_ENCRYPTION_KEY },
+        CryptoService,
         { provide: AuditLogService, useValue: { record: jest.fn() } },
         { provide: LoginLogsService, useValue: { record: jest.fn() } },
         { provide: UploadsService, useValue: {} },
@@ -195,7 +213,9 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
     usersRepository.insert.mockResolvedValue(row());
     usersRepository.findById.mockResolvedValue(row());
     usersRepository.findByUsername.mockResolvedValue(null);
-    usersRepository.findByEmailOrPhone.mockResolvedValue(null);
+    usersRepository.findByEmailHmacOrPhoneHmac.mockResolvedValue(null);
+    usersRepository.findByEmailHmac.mockResolvedValue(null);
+    usersRepository.findByPhoneHmac.mockResolvedValue(null);
   });
 
   // ===== 邀请码分支（既有用例，已补验证码字段） =====
@@ -209,7 +229,15 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
       .expect(201);
 
     expect(usersRepository.insert).toHaveBeenCalledWith(
-      expect.objectContaining({ role: Role.VISITOR, inviteCodeId: null }),
+      expect.objectContaining({
+        role: Role.VISITOR,
+        inviteCodeId: null,
+        // v10.0：email 存信封 token（非明文），精确查走 HMAC 列
+        email: expect.stringMatching(/^v1\./),
+        emailHmac: testCrypto.hmac('a@example.com'),
+        phoneHmac: null,
+        cryptoId: expect.stringMatching(/^[0-9a-f]{32}$/),
+      }),
       expect.anything(),
     );
     expect(res.body.role).toBe(Role.VISITOR);
@@ -402,14 +430,18 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
   // ===== 登录 / 改密 / 转正（v6.0 验证码路径） =====
 
   it('登录带正确验证码：成功', async () => {
-    usersRepository.findByEmailOrPhone.mockResolvedValue(row());
+    usersRepository.findByEmailHmacOrPhoneHmac.mockResolvedValue(row());
 
     const res = await request(app.getHttpServer())
       .post('/auth/login')
       .send({ identifier: 'A@Example.com', password: 'password123', ...(await captchaOf()) })
       .expect(201);
 
-    expect(usersRepository.findByEmailOrPhone).toHaveBeenCalledWith('a@example.com');
+    // 登录精确查走 HMAC 列（v10.0）：identifier 归一化（邮箱小写）后取 hmac
+    expect(usersRepository.findByEmailHmacOrPhoneHmac).toHaveBeenCalledWith(
+      testCrypto.hmac('a@example.com'),
+      testCrypto.hmac('a@example.com'),
+    );
     expect(res.body.id).toBe(SELF_ID);
   });
 
@@ -423,7 +455,7 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
       .expect(400);
 
     expect(res.body.message).toBe('验证码错误或已失效');
-    expect(usersRepository.findByEmailOrPhone).not.toHaveBeenCalled();
+    expect(usersRepository.findByEmailHmacOrPhoneHmac).not.toHaveBeenCalled();
   });
 
   it('改密带正确验证码：204 并吊销全部 refresh', async () => {
@@ -468,10 +500,18 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
       .send({ type: 'email', value: 'new@example.com', password: 'password123', ...(await captchaOf()) })
       .expect(200);
 
-    expect(usersRepository.updateIdentifier).toHaveBeenCalledWith(SELF_ID, {
-      email: 'new@example.com',
-      phone: null,
-    });
+    expect(usersRepository.updateIdentifier).toHaveBeenCalledWith(
+      SELF_ID,
+      expect.objectContaining({
+        phone: null,
+        phoneHmac: null,
+        emailHmac: testCrypto.hmac('new@example.com'),
+      }),
+    );
+    // 库内为信封 token（非明文）；接口响应仍是明文
+    const patch = usersRepository.updateIdentifier.mock.calls[0][1];
+    expect(patch.email).toMatch(/^v1\./);
+    expect(testCrypto.open('email', patch.email, SELF_CRYPTO_ID)).toBe('new@example.com');
     expect(res.body.email).toBe('new@example.com');
   });
 

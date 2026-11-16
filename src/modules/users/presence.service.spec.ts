@@ -1,6 +1,7 @@
 import { ForbiddenException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { Role } from '../../common/decorators/roles.decorator';
+import { CryptoService } from '../../common/crypto/crypto.service';
 import { UsersRepository } from './users.repository';
 import { PresenceService } from './presence.service';
 
@@ -11,6 +12,10 @@ describe('PresenceService', () => {
     touchLastSeen: jest.fn(),
     listLastSeenSince: jest.fn(),
   };
+  // v10.0：在线列表输出前解密邮箱；打桩直接回传 token 便于断言透传
+  const crypto = {
+    open: jest.fn((_purpose: string, token: string | null) => token ?? null),
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -18,6 +23,7 @@ describe('PresenceService', () => {
       providers: [
         PresenceService,
         { provide: UsersRepository, useValue: usersRepository },
+        { provide: CryptoService, useValue: crypto },
       ],
     }).compile();
     service = moduleRef.get(PresenceService);
@@ -49,6 +55,7 @@ describe('PresenceService', () => {
     usersRepository.listLastSeenSince.mockResolvedValue([
       {
         id: 'u-1',
+        cryptoId: 'c-1',
         email: 'a@example.com',
         nickname: '甲',
         role: 'MEMBER',
