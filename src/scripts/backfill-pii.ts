@@ -1,17 +1,18 @@
 /* 个人信息信封加密回填脚本（v10.0，幂等）
    用法：pnpm backfill:pii（先 pnpm build）
    行为：为存量用户生成 crypto_id，把 email/phone/bio/company/location/link/
-        socials/profileReadme 明文就地加密为信封 token（v1. 前缀识别已加密，跳过），
+        socials/profileReadme 明文就地加密为信封 token（认证通过的信封保持不变），
         并写 email_hmac/phone_hmac 精确查找列。
    红线：明文只在内存转换，不打日志；主密钥来自 APP_ENCRYPTION_KEY。 */
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { eq } from 'drizzle-orm';
-import { db } from '../db';
+import { db, type Database } from '../db';
 import { users } from '../db/schema';
 import { CryptoService } from '../common/crypto/crypto.service';
 
-const TOKEN_PREFIX = 'v1.';
+// 仅完整信封形态才作为密文候选；普通 v1. 文本仍按明文处理。
+const ENVELOPE_PATTERN = /^v1\.[a-f0-9]{32}\.[0-9]+\.[A-Za-z0-9_-]+$/;
 
 function loadLocalEnv(): void {
   try {
@@ -36,55 +37,60 @@ function loadLocalEnv(): void {
   }
 }
 
-function isToken(value: string | null): boolean {
-  return !!value && value.startsWith(TOKEN_PREFIX);
-}
-
-async function main(): Promise<void> {
-  loadLocalEnv();
-  const crypto = new CryptoService(process.env.APP_ENCRYPTION_KEY ?? '');
-  const rows = await db.select().from(users);
+export async function backfillPii(database: Database, crypto: CryptoService): Promise<void> {
+  // 扫描时只取 ID；每行的数据必须在获得行锁之后重新读取。
+  const ids = await database.select({ id: users.id }).from(users);
   let updated = 0;
   let skipped = 0;
 
-  for (const row of rows) {
-    const patch: Record<string, unknown> = {};
-    const cryptoId = row.cryptoId ?? crypto.newCryptoId();
-    if (cryptoId !== row.cryptoId) patch.cryptoId = cryptoId;
+  for (const { id } of ids) {
+    const changed = await database.transaction(async (tx) => {
+      const [row] = await tx.select().from(users).where(eq(users.id, id)).for('update');
+      if (!row) return false; // 扫描后用户可能已被删除
+      const patch: Partial<typeof users.$inferInsert> = {};
+      const cryptoId = row.cryptoId ?? crypto.newCryptoId();
+      if (!row.cryptoId) patch.cryptoId = cryptoId;
 
-    const sealField = (column: string, value: string | null, purpose: string): void => {
-      if (isToken(value) || !value) return;
-      patch[column] = crypto.seal(purpose, value, cryptoId);
-    };
-    sealField('email', row.email, 'email');
-    sealField('phone', row.phone, 'phone');
-    sealField('bio', row.bio, 'profile');
-    sealField('company', row.company, 'profile');
-    sealField('location', row.location, 'profile');
-    sealField('link', row.link, 'profile');
-    sealField('profileReadme', row.profileReadme, 'profile');
-
-    if (row.socials && row.socials.length > 0 && !row.socials.some((item) => isToken(item))) {
-      patch.socials = row.socials.map((item) => crypto.seal('social', item, cryptoId));
-    }
-
-    // 查找列：仅当仍是明文时可计算 HMAC（已加密而缺 hmac 的行无法补算，需人工核对）
-    if (row.email && !isToken(row.email)) patch.emailHmac = crypto.hmac(row.email.toLowerCase());
-    else if (isToken(row.email) && !row.emailHmac) console.warn(`跳过：用户 ${row.id} email 已加密但缺 email_hmac，无法补算`);
-    if (row.phone && !isToken(row.phone)) patch.phoneHmac = crypto.hmac(row.phone);
-    else if (isToken(row.phone) && !row.phoneHmac) console.warn(`跳过：用户 ${row.id} phone 已加密但缺 phone_hmac，无法补算`);
-
-    if (Object.keys(patch).length === 0) {
-      skipped += 1;
-      continue;
-    }
-    await db.update(users).set(patch).where(eq(users.id, row.id));
-    updated += 1;
+      const plaintext = (value: string, purpose: string): string => {
+        if (!ENVELOPE_PATTERN.test(value)) return value;
+        const opened = crypto.open(purpose, value, cryptoId);
+        if (opened === null) {
+          // 不输出字段值；错误密钥、损坏或跨用户密文均不能再次加密覆盖。
+          throw new Error(`用户 ${id} 的 ${purpose} 信封认证失败，已回滚该行`);
+        }
+        return opened;
+      };
+      const sealField = (value: string | null, purpose: string): string | null => {
+        if (!value) return null;
+        const opened = plaintext(value, purpose);
+        return ENVELOPE_PATTERN.test(value) ? value : crypto.seal(purpose, opened, cryptoId);
+      };
+      for (const column of ['email', 'phone', 'bio', 'company', 'location', 'link', 'profileReadme'] as const) {
+        const purpose = column === 'email' || column === 'phone' ? column : 'profile';
+        const sealed = sealField(row[column], purpose);
+        if (sealed !== row[column]) patch[column] = sealed;
+      }
+      if (row.socials?.length) {
+        const sealed = row.socials.map((item) => sealField(item, 'social') ?? '');
+        if (sealed.some((item, index) => item !== row.socials![index])) patch.socials = sealed;
+      }
+      if (row.email && !row.emailHmac) patch.emailHmac = crypto.hmac(plaintext(row.email, 'email').toLowerCase());
+      if (row.phone && !row.phoneHmac) patch.phoneHmac = crypto.hmac(plaintext(row.phone, 'phone'));
+      if (!Object.keys(patch).length) return false;
+      await tx.update(users).set(patch).where(eq(users.id, id));
+      return true;
+    });
+    if (changed) updated += 1;
+    else skipped += 1;
   }
   console.log(`[backfill-pii] 完成：加密 ${updated} 行，跳过 ${skipped} 行`);
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+if (require.main === module) {
+  loadLocalEnv();
+  backfillPii(db, new CryptoService(process.env.APP_ENCRYPTION_KEY ?? '')).catch(() => {
+    // 数据库错误可能携带查询参数，不记录原始异常以避免泄露个人资料。
+    console.error('[backfill-pii] 回填失败，当前行已回滚；请检查密钥、数据及数据库状态');
+    process.exit(1);
+  });
+}
