@@ -198,6 +198,14 @@ TagView = { id: string; name: string; count: number }
   - 校验失败统一 `400`，message 恒为「验证码错误或已失效」（不区分过期 / 错误 / 已消费）
 - 响应设置 `Cache-Control: no-store`。获取图片按客户端 IP 限制每分钟 60 次，超限返回 429；与既有登录/注册失败次数限流叠加。
 
+### 1.9 文档站访问探针 `GET /api/v1/auth/docs-probe`
+
+- 权限：🔐 登录且 **`MEMBER` 及以上**（学员/校友/负责人/管理员）
+- 说明：API 文档站（`docs.` 子域）的访问门禁探针——由入口 nginx `auth_request` 转发登录 Cookie 探测，无请求/响应体，状态码即语义
+- 成功：`204`
+- 失败：`401` 未登录；`403` 为 `VISITOR`（文档站对学员及以上开放）
+- 备注：文档站「在线试调」以登录者身份直调本 API（需 `COOKIE_DOMAIN` 放宽至主域 + CORS 允许文档子域），权限由服务端 RBAC 按本人角色约束
+
 ---
 
 ## 2. 用户 `/api/v1/users`

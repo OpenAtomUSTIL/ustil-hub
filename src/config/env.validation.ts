@@ -5,7 +5,10 @@ export const envValidationSchema = Joi.object({
   NODE_ENV: Joi.string().valid('development', 'production', 'test').default('development'),
   PORT: Joi.number().integer().positive().default(3000),
   TRUST_PROXY_HOPS: Joi.number().integer().valid(0, 1).default(0),
+  // 逗号分隔多源（v11.0：可加 https://docs.openatomustil.cn 供文档站试调）
   CORS_ORIGIN: Joi.string().default('http://localhost:5173'),
+  // cookie 域（可选）：如 .openatomustil.cn，使主站会话对子域可见（文档站试调用）；缺省 host-only
+  COOKIE_DOMAIN: Joi.string().allow('').optional(),
   DATABASE_URL: Joi.string().required(),
   REDIS_URL: Joi.string().required(),
   JWT_ACCESS_SECRET: Joi.string().min(16).required(),

@@ -1,0 +1,4814 @@
+openapi: 3.1.0
+info:
+  title: USTIL 开放论坛 API
+  version: 1.0.0
+  summary: USTIL Hub 后端接口契约（docs/API.md 全量导出）
+  description: |
+    USTIL Hub（ustil-hub）后端 HTTP 契约的 OpenAPI 3.1 导出，作为 API 文档站（Scalar 渲染）的内容源。
+    契约唯一事实来源为 `docs/API.md`（依据 `src/modules/**` 控制器与 service 层权限校验整理）；本文件只做结构化转写，不新增语义。
+
+    ## 契约约定摘要
+
+    - **路由前缀**：所有接口以 `/api/v1` 开头（已并入 servers URL，路径部分不再重复前缀）。
+    - **认证方式**：httpOnly Cookie 双 token，前端无需手动携带 Header。
+      - `access_token`：JWT（`sub` = userId，`role`），TTL 15 分钟，Path `/`；
+      - `refresh_token`：JWT（`sub` + `jti`），刷新时轮换，TTL 7 天，Path `/api/v1/auth`。
+    - **会话失效**：改密码 / 登出 / 封禁 / 角色变更 → 清空该用户全部 refresh 并递增 `sessionVersion`，旧 access/refresh 同时失效（后续请求 401）。
+    - **成功响应**：直接返回业务数据体（对象或数组），不包裹 `code/message/data`。
+    - **失败响应**（全局 `AllExceptionsFilter` 统一产出）：`{ statusCode, error, message, path, timestamp }`；`message` 可为 `string` 或 `string[]`（校验错误）。
+    - **错误码语义**：`400` 参数校验失败 / 文件不合规 / 当前密码错误 / 两次输入的密码不一致 / 密码复杂度不足 / 验证码错误或已失效；`401` 未登录或登录已过期；`403` 已登录但无权限 / 被封禁 / 超出提交时间 / `VISITOR` 访问作业；`404` 资源不存在或不可见；`409` 状态冲突（标识被占用、邀请码无效/作废/过期/用尽）；`429` 登录失败次数过多，临时锁定。
+    - **分页**：请求 `?page=1&pageSize=20`（`pageSize` 默认 20、上限 100，超出直接 400 拒绝，不静默截断）；响应 `{ items, total, page, pageSize }`。
+    - **时间**：一律 ISO 8601 UTC 字符串（`2026-11-09T03:04:10.212Z`）；不接受 Unix 时间戳、无时区时间或无效日历日期。
+    - **校验**：全局 `ValidationPipe` 开启 `whitelist + forbidNonWhitelisted`，请求体中出现未声明字段直接 400。标题与昵称创建/更新时去除首尾空白后校验，纯空白返回 400；标题最长 200 字符、昵称最长 50 字符。
+    - **角色（RBAC 五级）**：`VISITOR` 临时访客（非邀请码注册，7 天内未持码转正自动删号，禁止查阅/提交作业）/ `MEMBER` 学习成员（持码注册，发起讨论、提交作业）/ `ALUMNI` 校友（发文章、布置作业）/ `WHEEL` 负责人（邀请码、剔除、提拔、发布内容、变更 issue 状态）/ `ADMIN` 管理员（任免 WHEEL、封禁、删他人内容；`ADMIN` 账号本身不可被改角色/删除/封禁）。
+    - **权限标注**：description 中 `🔓公开` 无需登录；`🔐登录` 任意已登录角色；`🛡️角色` 需指定角色；`👤` 需资源归属（所有者）校验；`⏰` 受业务状态/时间窗口约束。
+    - **slug 寻址（去 id 化）**：文章 / 作业 / 公告 / 资源 / Issue 创建时由标题生成唯一 slug（URL 不暴露裸 id）。详情类读接口 `:id` 可传 uuid 或 slug（uuid 优先匹配）；写接口（编辑 / 删除 / 审核 / 状态变更 / 回复 / 提交）仅接受 uuid，传 slug 返回 400。
+    - **解析式寻址（用户）**：用户读接口 `:id` 可传 uuid 或 username；用户管理类路径参数（封禁 / 解封 / 改角色 / 提前提拔 / 剔除学员）支持 uuid / username / email / phone 四种标识（uuid → username（含历史 handle）→ email → phone 依次解析），解析不到返回 404「用户不存在」。查询过滤参数（`userId` / `actorId` / `authorId` / `creatorId` 等）同样支持四种标识，解析不到返回空列表（不报错）。
+    - **图形验证码**：`captchaId` + `captchaCode` 为注册 / 登录 / 改密 / 换绑 / 持码转正的必填字段；一次性消费（校验通过即作废，复用直接失败），单 `captchaId` 校验失败 3 次作废；校验失败统一 400「验证码错误或已失效」（不区分过期 / 错误 / 已消费）；获取图片按客户端 IP 限每分钟 60 次（超限 429），与登录/注册失败限流叠加。
+    - **软删除与 purge**：文章 / 公告 / 资源 / 评论（讨论回复）的 DELETE 为软删（置 `deleted_at`）进回收站，可经 `POST /admin/trash/{type}/{id}/restore` 还原；软删期间列表/详情/搜索/tag 过滤/tag 计数均排除软删行（详情 404），`taggings` 保留、恢复后完整可见；重复恢复返回 409。剔除学员为硬删 purge（单事务）：连同名下文章/公告/资料/作业（含回收站软删行）一并硬删，级联其 issues/replies/提交，已有他人提交的作业改派给操作者（不连带删他人提交）。
+    - **个人字段信封加密（v10.0）**：`email` / `phone` / `bio` / `company` / `location` / `link` / `socials` / `profileReadme` 库内为 AES-256-GCM 信封密文（配 `email_hmac` / `phone_hmac` 精确查找列）。**API 契约不变——请求/响应仍为明文**，加解密仅在服务端内部完成，本文件所有接口语义不受影响。后台用户 keyword 模糊搜只搜昵称/用户名（密文不可模糊检索）。
+    - **文件上传**（头像、作业提交共用规则）：扩展名 + mime 双校验，白名单 `doc docx pdf png jpg jpeg zip`，单文件 ≤10MB（`UPLOAD_MAX_SIZE` 可配）；存储 key 为 UUID + 扩展名，文件 URL 一律经受控接口（bucket 不开放公共访问）。
+    - **资源地址**：创建、更新只允许带协议的 HTTP / HTTPS 链接，FTP 等其他协议返回 400。
+    - **标签**：`tags` 可省略，更新时 `[]` 表示清空，显式 `null` 返回 400。公告 `pinned` / `notify` 可省略，必须是布尔值，`null` 或字符串 `"false"` 返回 400。
+servers:
+  - url: https://openatomustil.cn/api/v1
+    description: 生产环境
+  - url: http://localhost:3000/api/v1
+    description: 本地调试（自签证书，见 deploy/init-certs.sh）
+tags:
+  - name: 认证
+    description: 注册、登录、令牌刷新、密码与图形验证码（/auth）
+  - name: 用户
+    description: 本人资料、个人主页、关注关系与公开徽章（/users）
+  - name: 文章
+    description: 文章创作、审核状态机与可见性（/articles）
+  - name: 作业
+    description: 作业发布、时间窗口派生状态与提交（/assignments）
+  - name: 讨论
+    description: Issue 发起、回复与状态流转（/issues）
+  - name: 公告
+    description: 公告发布与管理（/announcements）
+  - name: 资源
+    description: 外链资源库（/resources）
+  - name: 标签
+    description: 统一标签体系，覆盖 ARTICLE / ISSUE / RESOURCE（/tags）
+  - name: 通知
+    description: 站内通知，仅操作本人通知（/notifications）
+  - name: 存储
+    description: 受控文件读取（/storage）
+  - name: 后台管理
+    description: 用户管理、邀请码、文件、回收站、评论、日志与统计（/admin）
+security:
+  - cookieAuth: []
+paths:
+  /auth/register:
+    post:
+      tags: [认证]
+      summary: 注册
+      operationId: authRegister
+      description: |
+        🔓 公开。邮箱或手机号二选一注册。
+
+        - 密码规则：8~128 位，且 大写/小写/数字/符号 四类中至少两类（错误文案「密码需包含大写字母、小写字母、数字、符号中的至少两类」）；`passwordConfirm` 与 `password` 不一致 → 400「两次输入的密码不一致」。
+        - 有有效邀请码 → 注册为 `MEMBER` 并核销名额；无码 → `VISITOR`（7 天内可持码经 /auth/invite-code 转正，逾期自动删号）。
+        - 成功写入 `access_token` / `refresh_token` 双 token Cookie。
+        - 失败：400 参数非法 / 两次输入的密码不一致 / 密码复杂度不足 / 验证码错误或已失效；409 邮箱/手机号已注册、邀请码无效/已作废/已过期/已被用尽。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            example:
+              identifier: user@example.com
+              password: Str0ngPass!23
+              passwordConfirm: Str0ngPass!23
+              nickname: 小明
+              inviteCode: USTIL-7F3K9Q
+              captchaId: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+              captchaCode: 7k2p
+      responses:
+        '201':
+          description: 注册成功，返回本人资料并写入双 token Cookie
+          headers:
+            Set-Cookie:
+              description: 写入 access_token（Path=/）与 refresh_token（Path=/api/v1/auth），httpOnly
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSelf'
+              example:
+                id: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+                username: xiaoming
+                nickname: 小明
+                avatarUrl: null
+                role: MEMBER
+                status: ACTIVE
+                email: user@example.com
+                createdAt: '2026-11-09T03:04:10.212Z'
+                updatedAt: '2026-11-09T03:04:10.212Z'
+        '400':
+          description: '参数校验失败 / 两次输入的密码不一致「两次输入的密码不一致」/ 密码复杂度不足「密码需包含大写字母、小写字母、数字、符号中的至少两类」/ 验证码错误或已失效「验证码错误或已失效」'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                校验失败:
+                  value:
+                    statusCode: 400
+                    error: Bad Request
+                    message:
+                      - passwordConfirm must match password exactly
+                    path: /api/v1/auth/register
+                    timestamp: '2026-11-09T03:04:10.212Z'
+                业务拒绝:
+                  value:
+                    statusCode: 400
+                    error: Bad Request
+                    message: 两次输入的密码不一致
+                    path: /api/v1/auth/register
+                    timestamp: '2026-11-09T03:04:10.212Z'
+        '409':
+          description: '邮箱/手机号已注册；或邀请码无效/已作废/已过期/已被用尽'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 409
+                error: Conflict
+                message: 邮箱已被注册
+                path: /api/v1/auth/register
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+  /auth/invite-code:
+    post:
+      tags: [认证]
+      summary: 持码转正
+      operationId: authInviteCode
+      description: |
+        🔐 登录（仅 `VISITOR`，其他角色 403）。VISITOR 持有效邀请码转为 `MEMBER` 并核销名额。
+
+        - 成功换发新双 token Cookie（旧 refresh 全部作废）。
+        - 失败：400 验证码错误或已失效；403 非 VISITOR；409 邀请码无效/作废/过期/用尽。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InviteCodeRequest'
+            example:
+              inviteCode: USTIL-7F3K9Q
+              captchaId: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+              captchaCode: 7k2p
+      responses:
+        '201':
+          description: 转正成功，返回 UserSelf（角色变为 MEMBER），换发新双 token Cookie
+          headers:
+            Set-Cookie:
+              description: 换发 access_token 与 refresh_token
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSelf'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          description: '非 VISITOR 账号不可持码转正'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 403
+                error: Forbidden
+                message: 无权访问该资源
+                path: /api/v1/auth/invite-code
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '409':
+          description: '邀请码无效/已作废/已过期/已被用尽'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 409
+                error: Conflict
+                message: 邀请码无效
+                path: /api/v1/auth/invite-code
+                timestamp: '2026-11-09T03:04:10.212Z'
+  /auth/login:
+    post:
+      tags: [认证]
+      summary: 登录
+      operationId: authLogin
+      description: |
+        🔓 公开。邮箱或手机号 + 密码登录。
+
+        - 401 统一提示「账号或密码错误」（不区分用户不存在/密码错误，防账号枚举）。
+        - 429 同一账号 + IP 15 分钟内失败 5 次，锁定 15 分钟。
+        - 403 账号被封禁。400 验证码错误或已失效。
+        - 成功与失败均写入 `login_logs`（成功含 userId；失败 userId 为空，failReason 区分 `用户不存在` / `密码错误` / `账号已封禁` / `登录尝试过于频繁`），不落密码。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              identifier: user@example.com
+              password: Str0ngPass!23
+              captchaId: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+              captchaCode: 7k2p
+      responses:
+        '201':
+          description: 登录成功，返回本人资料并写入双 token Cookie
+          headers:
+            Set-Cookie:
+              description: 写入 access_token 与 refresh_token
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSelf'
+              example:
+                id: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+                username: xiaoming
+                nickname: 小明
+                avatarUrl: null
+                role: MEMBER
+                status: ACTIVE
+                email: user@example.com
+                createdAt: '2026-11-09T03:04:10.212Z'
+                updatedAt: '2026-11-09T03:04:10.212Z'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: '统一提示「账号或密码错误」（不区分用户不存在/密码错误）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 401
+                error: Unauthorized
+                message: 账号或密码错误
+                path: /api/v1/auth/login
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '403':
+          description: '账号被封禁（status = BANNED）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 403
+                error: Forbidden
+                message: 账号已被封禁
+                path: /api/v1/auth/login
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '429':
+          description: '同一账号 + IP 15 分钟内失败 5 次，锁定 15 分钟'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 429
+                error: Too Many Requests
+                message: 登录尝试过于频繁
+                path: /api/v1/auth/login
+                timestamp: '2026-11-09T03:04:10.212Z'
+  /auth/refresh:
+    post:
+      tags: [认证]
+      summary: 刷新令牌
+      operationId: authRefresh
+      description: |
+        🔓 公开（依赖 `refresh_token` Cookie）。轮换 token：旧 `jti` 立即作废并签发新对。
+
+        - 旧 `jti` 复用视为窃取，清除该用户全部 refresh 并强制重登。
+        - 成功返回 **UserPublic**（脱敏，仅 id/username/nickname/avatarUrl/role，不含 email/phone）；前端登录态恢复一律以 `GET /auth/me` 为 UserSelf 来源。
+        - 失败：401 refresh 缺失/无效/已作废。
+      security:
+        - refreshCookieAuth: []
+      responses:
+        '201':
+          description: 刷新成功，返回 UserPublic 并写入新双 token Cookie
+          headers:
+            Set-Cookie:
+              description: 换发 access_token 与 refresh_token（轮换 jti）
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPublic'
+        '401':
+          description: 'refresh_token 缺失/无效/已作废'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 401
+                error: Unauthorized
+                message: 未登录或登录已过期
+                path: /api/v1/auth/refresh
+                timestamp: '2026-11-09T03:04:10.212Z'
+  /auth/logout:
+    post:
+      tags: [认证]
+      summary: 登出
+      operationId: authLogout
+      description: |
+        🔓 公开。清除双 token Cookie 并作废 refresh；同时写入登录日志（success: true，含 userId）。
+        会清空该用户全部 refresh 并递增 sessionVersion。
+      responses:
+        '204':
+          description: 已登出，无响应体
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/password:
+    post:
+      tags: [认证]
+      summary: 修改密码
+      operationId: authChangePassword
+      description: |
+        🔐 登录。修改本人密码。
+
+        - 新密码同注册复杂度规则（8~128 位、至少两类字符）。
+        - 成功后清除该用户全部 refresh 并递增 sessionVersion（其它端需重新登录）。
+        - 失败：400 当前密码错误 / 新密码复杂度不足 / 验证码错误或已失效。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+            example:
+              currentPassword: OldPassw0rd!
+              newPassword: Str0ngPass!23
+              captchaId: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+              captchaCode: 7k2p
+      responses:
+        '204':
+          description: 修改成功，无响应体；全部 refresh 作废并递增 sessionVersion
+        '400':
+          description: '当前密码错误 / 新密码复杂度不足「密码需包含大写字母、小写字母、数字、符号中的至少两类」/ 验证码错误或已失效'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 400
+                error: Bad Request
+                message: 验证码错误或已失效
+                path: /api/v1/auth/password
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/me:
+    get:
+      tags: [认证]
+      summary: 获取当前用户
+      operationId: authMe
+      description: 🔐 登录。返回当前登录用户的完整本人资料（UserSelf）。前端登录态恢复以本接口为来源。
+      responses:
+        '200':
+          description: 当前用户本人资料
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSelf'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/captcha:
+    get:
+      tags: [认证]
+      summary: 获取图形验证码
+      operationId: authCaptcha
+      description: |
+        🔓 公开。自绘 PNG（无第三方服务；图片中不含文字答案元数据）。答案以 sha256 哈希存 Redis（不落明文），TTL 5 分钟。
+
+        - 消费规则：`captchaId` + `captchaCode` 为注册 / 登录 / 改密 / 换绑 / 持码转正的必填字段。
+        - **一次性消费**：校验通过即作废，同一 `captchaId` 复用直接校验失败；单 `captchaId` 校验失败 3 次作废。
+        - 校验失败统一 400，message 恒为「验证码错误或已失效」（不区分过期 / 错误 / 已消费）。
+        - 响应设置 `Cache-Control: no-store`；获取图片按客户端 IP 限制每分钟 60 次，超限 429，与登录/注册失败限流叠加。
+      parameters:
+        - name: theme
+          in: query
+          required: false
+          description: 可选，`dark` = 深色调色板（深底亮字，供深色模式），默认浅色；仅影响图片配色，响应结构与校验规则不变
+          schema:
+            type: string
+            enum: [dark, light]
+            default: light
+      responses:
+        '200':
+          description: '验证码图片与 id；Cache-Control: no-store'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaptchaResponse'
+              example:
+                captchaId: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+                image: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...
+        '429':
+          description: '同一 IP 每分钟获取超过 60 次'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 429
+                error: Too Many Requests
+                message: 请求过于频繁
+                path: /api/v1/auth/captcha
+                timestamp: '2026-11-09T03:04:10.212Z'
+  /users/me:
+    patch:
+      tags: [用户]
+      summary: 修改本人资料
+      operationId: usersUpdateMe
+      description: |
+        🔐 登录（仅本人）。修改昵称 / 头像地址，字段均可选。
+        昵称去除首尾空白后 ≤50 字符、纯空白 400；avatarUrl ≤1024。
+        失败：400 校验失败。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateMeRequest'
+            example:
+              nickname: 小明同学
+              avatarUrl: https://openatomustil.cn/api/v1/storage/files/0f8fad5b-d9cb-469f-a165-70867728950e.png
+      responses:
+        '200':
+          description: 更新后的本人资料
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSelf'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /users/me/identifier:
+    put:
+      tags: [用户]
+      summary: 更换绑定邮箱/手机号
+      operationId: usersChangeIdentifier
+      description: |
+        🔐 登录（仅本人；`ADMIN` 账号初始化后不可换绑，403）。
+
+        - 一个账号只绑定一个邮箱**或**一个手机号；换绑时清空另一种标识。
+        - 必须校验当前密码。换绑走 hmac 查找列做唯一性判定（v10.0 信封加密，接口明文）。
+        - 失败：400 当前密码错误/格式非法/验证码错误或已失效；409 已被其它账号绑定。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeIdentifierRequest'
+            example:
+              type: email
+              value: new@example.com
+              password: Str0ngPass!23
+              captchaId: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+              captchaCode: 7k2p
+      responses:
+        '200':
+          description: 换绑后的本人资料
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSelf'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 'ADMIN 账号初始化后不可换绑'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 403
+                error: Forbidden
+                message: 无权访问该资源
+                path: /api/v1/users/me/identifier
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '409':
+          description: '新邮箱/手机号已被其它账号绑定'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 409
+                error: Conflict
+                message: 该邮箱已被其它账号绑定
+                path: /api/v1/users/me/identifier
+                timestamp: '2026-11-09T03:04:10.212Z'
+  /users/me/username:
+    put:
+      tags: [用户]
+      summary: 修改主页用户名
+      operationId: usersChangeUsername
+      description: |
+        🔐 登录（仅本人）。2-32 位，仅字母/数字/-/_。自动 trim 并转小写。
+
+        - 改名写入 `user_username_history` 历史记录（历史 handle 仍可被解析式寻址命中）；原名不再占用。
+        - 传入与当前相同的名字直接成功返回。
+        - 失败：400 格式非法；409 已被占用。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeUsernameRequest'
+            example:
+              username: xiaoming-dev
+      responses:
+        '200':
+          description: 更新后的本人资料
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSelf'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: '用户名已被占用'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 409
+                error: Conflict
+                message: 用户名已被占用
+                path: /api/v1/users/me/username
+                timestamp: '2026-11-09T03:04:10.212Z'
+  /users/me/avatar:
+    post:
+      tags: [用户]
+      summary: 上传头像
+      operationId: usersUploadAvatar
+      description: |
+        🔐 登录（仅本人）。`multipart/form-data`，字段 `file`。
+        扩展名 + mime 双校验，白名单 `doc docx pdf png jpg jpeg zip`，单文件 ≤10MB。
+        失败：400 格式或大小不合规。
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 头像文件（白名单 + ≤10MB）
+      responses:
+        '201':
+          description: 上传成功，返回更新后的本人资料
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSelf'
+        '400':
+          description: '文件格式或大小不合规'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 400
+                error: Bad Request
+                message: 文件不合规
+                path: /api/v1/users/me/avatar
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /users/me/profile-page:
+    put:
+      tags: [用户]
+      summary: 编辑个人主页
+      operationId: usersUpdateProfilePage
+      description: |
+        🔐 登录（仅本人）。字段均可选，传 `null` 清空对应字段；省略表示不动。
+
+        - `pinnedItems` ≤6 项、不得重复、目标必须存在且**属于本人**（否则 400）；`[]` 清空。
+        - `company` / `location` ≤100、`link` ≤200、`socials` ≤4 条且每条 ≤200（空串条目自动剔除）；链接宽松校验（可裸域名，展示时前端补 `https://`）。
+        - v10.0：`bio` / `profileReadme` / `company` / `location` / `link` / `socials` 库内信封加密，接口明文。
+        - 失败：400 超长/超量/重复/不属于本人；404 用户不存在。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfilePageRequest'
+            example:
+              bio: 在学 USTIL 的大二学生
+              profileReadme: '# 个人介绍\n\n长文……'
+              pinnedItems:
+                - type: ARTICLE
+                  id: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+              company: 某某大学
+              location: 北京
+              link: example.com
+              socials:
+                - https://github.com/xiaoming
+      responses:
+        '200':
+          description: 更新成功（空响应体）
+        '400':
+          description: '超长/超量/重复/pinnedItems 不属于本人'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 400
+                error: Bad Request
+                message: pinnedItems 不得超过 6 项
+                path: /api/v1/users/me/profile-page
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /users/{id}/ban:
+    post:
+      tags: [用户]
+      summary: 封禁账号
+      operationId: usersBan
+      description: |
+        🛡️ 角色：仅 `ADMIN`（`ADMIN` 账号不可被封禁，403）。
+
+        - 寻址：`id` 支持 uuid / username / email / phone（uuid 优先），解析不到 404「用户不存在」。
+        - 封禁立即吊销该用户全部 refresh 并递增 sessionVersion；之后请求直接 403。
+      parameters:
+        - $ref: '#/components/parameters/AdminUserRefParam'
+      responses:
+        '201':
+          description: 封禁成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id:
+                    type: string
+                  status:
+                    type: string
+                    const: BANNED
+              example:
+                id: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+                status: BANNED
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '非 ADMIN，或目标是 ADMIN 账号（不可被封禁）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 403
+                error: Forbidden
+                message: 无权访问该资源
+                path: /api/v1/users/018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e/ban
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '404':
+          description: '用户不存在（解析式寻址未命中）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 404
+                error: Not Found
+                message: 用户不存在
+                path: /api/v1/users/nobody/ban
+                timestamp: '2026-11-09T03:04:10.212Z'
+  /users/{id}/unban:
+    post:
+      tags: [用户]
+      summary: 解封账号
+      operationId: usersUnban
+      description: |
+        🛡️ 角色：仅 `ADMIN`。
+        寻址：`id` 支持 uuid / username / email / phone（uuid 优先），解析不到 404「用户不存在」。
+      parameters:
+        - $ref: '#/components/parameters/AdminUserRefParam'
+      responses:
+        '201':
+          description: 解封成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id:
+                    type: string
+                  status:
+                    type: string
+                    const: ACTIVE
+              example:
+                id: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+                status: ACTIVE
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /users/{id}:
+    get:
+      tags: [用户]
+      summary: 查看他人公开资料
+      operationId: usersGetPublic
+      description: |
+        🔐 登录。`:id` 可传 uuid 或 username（uuid 优先匹配）。
+        返回 UserPublic（id/username/nickname/avatarUrl/role）；任何人不可查看他人邮箱、手机号。
+      parameters:
+        - $ref: '#/components/parameters/UserRefParam'
+      responses:
+        '200':
+          description: 用户公开资料
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPublic'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /users/{id}/profile:
+    get:
+      tags: [用户]
+      summary: 个人主页
+      operationId: usersGetProfile
+      description: |
+        🔐 登录（`VISITOR` 仅可访问**本人**主页，访问他人 403）。`:id` 可传 uuid 或 username。
+
+        - 返回 UserProfileView（含 v9.0 公开资料字段 company / location / link / socials）。
+        - `stats` 聚合计数不含软删行；`topTags` 至多 10 项；`pinnedItems` 仅保留仍存在且未软删的目标。
+        - `email` / `phone` 仅 isSelf 时返回（库内信封密文，接口明文）。
+      parameters:
+        - $ref: '#/components/parameters/UserRefParam'
+      responses:
+        '200':
+          description: 个人主页视图
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserProfileView'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 'VISITOR 访问他人主页'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 403
+                error: Forbidden
+                message: 无权访问该资源
+                path: /api/v1/users/xiaoming/profile
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /users/{id}/activity:
+    get:
+      tags: [用户]
+      summary: 活跃热力图
+      operationId: usersGetActivity
+      description: |
+        🔐 登录（`VISITOR` 仅本人）。`:id` 可传 uuid 或 username。
+        近一年（UTC 日）五类事件按日求和、按日期升序返回。
+      parameters:
+        - $ref: '#/components/parameters/UserRefParam'
+      responses:
+        '200':
+          description: 按日活跃计数
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActivityView'
+              example:
+                days:
+                  - date: '2026-11-08'
+                    count: 3
+                  - date: '2026-11-09'
+                    count: 1
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 'VISITOR 访问他人活跃数据'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /users/{id}/replies:
+    get:
+      tags: [用户]
+      summary: 回复列表
+      operationId: usersGetReplies
+      description: |
+        🔐 登录（`VISITOR` 仅本人）。`:id` 可传 uuid 或 username。分页返回该用户的讨论回复。
+      parameters:
+        - $ref: '#/components/parameters/UserRefParam'
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: 回复分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileReplyPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /users/{id}/follow:
+    post:
+      tags: [用户]
+      summary: 关注
+      operationId: usersFollow
+      description: |
+        🔐 登录（`MEMBER` 及以上；`VISITOR` 403）。`:id` 可传 uuid 或 username。
+
+        - 幂等（重复关注仍成功）；不能关注自己（400）；目标须 `ACTIVE`（封禁/不存在 404）。
+        - 首次关注向对方发送 `FOLLOW` 站内通知。
+      parameters:
+        - $ref: '#/components/parameters/UserRefParam'
+      responses:
+        '201':
+          description: 关注成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [following]
+                properties:
+                  following:
+                    type: boolean
+                    const: true
+              example:
+                following: true
+        '400':
+          description: '不能关注自己'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 400
+                error: Bad Request
+                message: 不能关注自己
+                path: /api/v1/users/018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e/follow
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 'VISITOR 不可关注'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: '目标用户不存在或已被封禁'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 404
+                error: Not Found
+                message: 用户不存在
+                path: /api/v1/users/nobody/follow
+                timestamp: '2026-11-09T03:04:10.212Z'
+    delete:
+      tags: [用户]
+      summary: 取关
+      operationId: usersUnfollow
+      description: |
+        🔐 登录（`MEMBER` 及以上；`VISITOR` 403）。`:id` 可传 uuid 或 username。幂等（未关注也成功）。
+      parameters:
+        - $ref: '#/components/parameters/UserRefParam'
+      responses:
+        '200':
+          description: 取关成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [following]
+                properties:
+                  following:
+                    type: boolean
+                    const: false
+              example:
+                following: false
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 'VISITOR 不可取关'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /users/{id}/followers:
+    get:
+      tags: [用户]
+      summary: 粉丝列表
+      operationId: usersGetFollowers
+      description: |
+        🔐 登录（`VISITOR` 仅本人）。`:id` 可传 uuid 或 username。排除封禁用户。
+      parameters:
+        - $ref: '#/components/parameters/UserRefParam'
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: 粉丝分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FollowUserPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /users/{id}/following:
+    get:
+      tags: [用户]
+      summary: 关注列表
+      operationId: usersGetFollowing
+      description: |
+        🔐 登录（`VISITOR` 仅本人）。`:id` 可传 uuid 或 username。权限与响应同粉丝列表。
+      parameters:
+        - $ref: '#/components/parameters/UserRefParam'
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: 关注分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FollowUserPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /users/{username}/stats-badge:
+    get:
+      tags: [用户]
+      summary: 社区数据徽章（JSON）
+      operationId: usersStatsBadge
+      description: |
+        🔓 公开（仅聚合计数，无私有字段；仅 **username** 寻址，不接受 uuid）。
+        shields.io endpoint 协议；`Cache-Control: public, max-age=300`。
+        六枚徽章：文章 / 讨论 / 回复 / 提交 / 近一年贡献 / 站内连击（`"N 天"`）。
+      parameters:
+        - $ref: '#/components/parameters/UsernameParam'
+      responses:
+        '200':
+          description: shields.io endpoint 徽章数组
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StatsBadgeItem'
+              example:
+                - schemaVersion: 1
+                  label: 文章
+                  message: '12'
+                  color: 2575fc
+                - schemaVersion: 1
+                  label: 讨论
+                  message: '5'
+                  color: 2575fc
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /users/{username}/stats-badge.svg:
+    get:
+      tags: [用户]
+      summary: 社区数据徽章（SVG）
+      operationId: usersStatsBadgeSvg
+      description: |
+        🔓 公开（仅 **username** 寻址）。站内自绘 SVG（shields.io 不可达时的备用），供 README `<img>` 引用；`Cache-Control: public, max-age=300`。
+      parameters:
+        - $ref: '#/components/parameters/UsernameParam'
+      responses:
+        '200':
+          description: SVG 徽章
+          content:
+            image/svg+xml:
+              schema:
+                type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /users/{username}/snake.svg:
+    get:
+      tags: [用户]
+      summary: 贡献贪吃蛇
+      operationId: usersSnakeSvg
+      description: |
+        🔓 公开（仅 **username** 寻址）。定时任务预生成的动画 SVG（@platane/snk 同款）；`Cache-Control: public, max-age=3600`。
+      parameters:
+        - $ref: '#/components/parameters/UsernameParam'
+        - name: theme
+          in: query
+          required: false
+          description: dark | 其他值默认 light
+          schema:
+            type: string
+            enum: [dark, light]
+            default: light
+      responses:
+        '200':
+          description: 动画 SVG
+          content:
+            image/svg+xml:
+              schema:
+                type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /articles:
+    get:
+      tags: [文章]
+      summary: 文章列表
+      operationId: articlesList
+      description: |
+        🔐 登录。分页返回文章列表。
+
+        - 状态枚举：`PENDING`（待审）/ `PUBLISHED`（已发布）/ `REJECTED`（已拒绝）/ `HIDDEN`（已隐藏）。
+        - 可见性：默认仅返回 `PUBLISHED`；按 `authorId` 过滤时，只有作者本人或 `WHEEL` / `ADMIN` 可查看该作者的全部状态。
+        - `authorId` 支持 uuid / 用户名 / 邮箱 / 手机号（解析不到返回空列表，不报错）。
+        - 返回 `readingMinutes`（阅读时长，正整数分钟）：按当前完整正文估算，中文 300 字/分钟、其他文字 200 词/分钟，混合累计向上取整，至少 1 分钟；链接、图片与 HTML 标签不计入，只读不存库。
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - $ref: '#/components/parameters/KeywordParam'
+        - $ref: '#/components/parameters/AuthorIdParam'
+        - $ref: '#/components/parameters/TagFilterParam'
+      responses:
+        '200':
+          description: 文章分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArticlePage'
+              example:
+                items:
+                  - id: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+                    slug: hello-ustil
+                    title: USTIL 学习路线
+                    excerpt: 从零开始的 USTIL 学习路线……
+                    tags: [USTIL, 入门]
+                    status: PUBLISHED
+                    readingMinutes: 4
+                    author:
+                      id: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1f
+                      username: xiaoming
+                      nickname: 小明
+                      avatarUrl: null
+                      role: MEMBER
+                    createdAt: '2026-11-09T03:04:10.212Z'
+                    updatedAt: '2026-11-09T03:04:10.212Z'
+                total: 1
+                page: 1
+                pageSize: 20
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [文章]
+      summary: 创建文章
+      operationId: articlesCreate
+      description: |
+        🛡️ 角色：`MEMBER`、`ALUMNI`、`WHEEL`、`ADMIN`（VISITOR 403）。
+
+        - `MEMBER` 发文**先审后发**：创建即 `PENDING`，3.7 审核通过后可见；`ALUMNI`/`WHEEL`/`ADMIN` **先发后审**：创建即 `PUBLISHED`（可被隐藏）。
+        - `tags` 可选：数组 ≤10 项，每项 ≤30 字符；显式 `null` 返回 400。
+        - 创建时由标题生成唯一 slug。标题去空白后 ≤200 字符、纯空白 400。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateArticleRequest'
+            example:
+              title: USTIL 学习路线
+              content: '# 前言\n\n正文……'
+              tags: [USTIL, 入门]
+      responses:
+        '201':
+          description: 创建成功，返回文章详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArticleDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '角色不足（VISITOR 不可发文）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 403
+                error: Forbidden
+                message: 无权访问该资源
+                path: /api/v1/articles
+                timestamp: '2026-11-09T03:04:10.212Z'
+  /articles/pending:
+    get:
+      tags: [文章]
+      summary: 待审列表
+      operationId: articlesPending
+      description: |
+        🛡️ 角色：`WHEEL`、`ADMIN`。返回全部 `PENDING` 状态文章（分页）。
+        page 为正整数默认 1；pageSize 1–100 默认 20；非法值 400。
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: 待审文章分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArticlePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /articles/{id}:
+    get:
+      tags: [文章]
+      summary: 文章详情
+      operationId: articlesGet
+      description: |
+        🔐 登录。`id` 可传 uuid 或 **slug**（uuid 优先匹配）。
+
+        - 非 `PUBLISHED` 文章仅**作者**与 `WHEEL`/`ADMIN` 可见（他人访问 404）。
+        - 软删文章详情 404。拒绝/隐藏备注经 `reviewNote` 对作者可见（审核记录另有 reviewedBy / reviewedAt 服务端留档）。
+        - 返回 `readingMinutes`（见 3.1 说明）。
+      parameters:
+        - $ref: '#/components/parameters/ContentIdParam'
+      responses:
+        '200':
+          description: 文章详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArticleDetail'
+              example:
+                id: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+                slug: hello-ustil
+                title: USTIL 学习路线
+                content: '# 前言\n\n正文……'
+                tags: [USTIL, 入门]
+                status: PUBLISHED
+                reviewNote: null
+                readingMinutes: 4
+                author:
+                  id: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1f
+                  username: xiaoming
+                  nickname: 小明
+                  avatarUrl: null
+                  role: MEMBER
+                createdAt: '2026-11-09T03:04:10.212Z'
+                updatedAt: '2026-11-09T03:04:10.212Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: '文章不存在 / 不可见（非 PUBLISHED 且非作者或管理员）/ 已软删'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 404
+                error: Not Found
+                message: 资源不存在或不可见
+                path: /api/v1/articles/hello-ustil
+                timestamp: '2026-11-09T03:04:10.212Z'
+    patch:
+      tags: [文章]
+      summary: 编辑文章
+      operationId: articlesUpdate
+      description: |
+        🛡️ 角色：`MEMBER`/`ALUMNI`/`WHEEL`/`ADMIN` + 👤 仅作者本人（**`ADMIN` 也不能编辑他人文章**）。
+        **仅 uuid 寻址**，传 slug 返回 400。
+
+        - `MEMBER` 只能修改本人 `PENDING` / `REJECTED` 文章（已发布文章 403「已发布的文章需联系管理员修改」）；修改被拒文章的标题、正文或标签后重新进入 `PENDING`，并清空上次审核结果。
+        - 字段可选：title / content / tags。`tags` 传 `[]` 清空、显式 `null` 400。
+      parameters:
+        - $ref: '#/components/parameters/ContentIdUuidParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateArticleRequest'
+            example:
+              title: USTIL 学习路线（修订）
+      responses:
+        '200':
+          description: 更新后的文章详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArticleDetail'
+        '400':
+          description: '传入 slug（写接口仅接受 uuid）/ 校验失败'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 400
+                error: Bad Request
+                message: 该接口仅接受 uuid
+                path: /api/v1/articles/hello-ustil
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '非作者/角色不足；MEMBER 编辑已发布文章返回「已发布的文章需联系管理员修改」'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 403
+                error: Forbidden
+                message: 已发布的文章需联系管理员修改
+                path: /api/v1/articles/018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '404':
+          description: '文章不存在'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 404
+                error: Not Found
+                message: 文章不存在
+                path: /api/v1/articles/018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+                timestamp: '2026-11-09T03:04:10.212Z'
+    delete:
+      tags: [文章]
+      summary: 删除文章
+      operationId: articlesDelete
+      description: |
+        🛡️ 角色：`MEMBER`/`ALUMNI`/`WHEEL`/`ADMIN` + 👤 作者本人，或 🛡️ `ADMIN` 删除任意文章。**仅 uuid 寻址**。
+
+        - **软删除**：置 `deleted_at` 进回收站，可经 `POST /admin/trash/{type}/{id}/restore` 还原；软删期间列表/详情/搜索/tag 过滤/tag 计数均排除。
+        - `MEMBER` 仅可删除本人 `PENDING` / `REJECTED` 文章。
+        - 失败：403 非作者且非管理员 / MEMBER 删除已发布文章。
+      parameters:
+        - $ref: '#/components/parameters/ContentIdUuidParam'
+      responses:
+        '204':
+          description: 已软删进回收站，无响应体
+        '400':
+          description: '传入 slug（写接口仅接受 uuid）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '非作者且非管理员；MEMBER 仅可删除本人 PENDING / REJECTED 文章'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 403
+                error: Forbidden
+                message: 无权访问该资源
+                path: /api/v1/articles/018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /articles/{id}/review:
+    post:
+      tags: [文章]
+      summary: 文章审核
+      operationId: articlesReview
+      description: |
+        🛡️ 角色：仅 `WHEEL`、`ADMIN`。**仅 uuid 寻址**，传 slug 返回 400。
+
+        状态机（不满足返回 409）：
+
+        | action | 前置状态 | 结果状态 |
+        | --- | --- | --- |
+        | `approve` | `PENDING` | `PUBLISHED` |
+        | `reject` | `PENDING` | `REJECTED` |
+        | `hide` | `PUBLISHED` | `HIDDEN` |
+        | `unhide` | `HIDDEN` | `PUBLISHED` |
+
+        记录 `reviewedBy` / `reviewedAt` / `reviewNote`；拒绝/隐藏备注经 ArticleDetail.reviewNote 对作者可见。
+        失败：409 状态不符（如「仅待审文章可通过」）；404 文章不存在。
+      parameters:
+        - $ref: '#/components/parameters/ContentIdUuidParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReviewRequest'
+            example:
+              action: approve
+              note: 内容合规，通过
+      responses:
+        '200':
+          description: 审核后的文章详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ArticleDetail'
+        '400':
+          description: '传入 slug（写接口仅接受 uuid）/ 校验失败'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: '文章不存在'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: '状态不符（如「仅待审文章可通过」）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 409
+                error: Conflict
+                message: 仅待审文章可通过
+                path: /api/v1/articles/018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e/review
+                timestamp: '2026-11-09T03:04:10.212Z'
+  /assignments:
+    get:
+      tags: [作业]
+      summary: 作业列表
+      operationId: assignmentsList
+      description: |
+        🔐 登录（`VISITOR` 一律 403，禁止查阅/提交作业）。
+
+        - 状态由时间派生（服务端判定，前端倒计时仅展示）：`NOT_STARTED`（now < startAt）/ `OPEN`（startAt ≤ now ≤ deadlineAt）/ `CLOSED`（now > deadlineAt）。
+        - `canSubmit` 仅 `MEMBER`/`ALUMNI` 且 state === 'OPEN' 时为 true。
+        - `mySubmission` 为当前用户在该作业下的提交（无则 null）。
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: 作业分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssignmentPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 'VISITOR 禁止查阅/提交作业'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 403
+                error: Forbidden
+                message: 无权访问该资源
+                path: /api/v1/assignments
+                timestamp: '2026-11-09T03:04:10.212Z'
+    post:
+      tags: [作业]
+      summary: 发布作业
+      operationId: assignmentsCreate
+      description: |
+        🛡️ 角色：仅 `ADMIN`、`ALUMNI`、`WHEEL`。
+
+        - `startAt`、`deadlineAt` 必须是带 `Z` 的 ISO 8601 UTC 字符串（秒必填，毫秒可选、最多 3 位）；数字时间戳、无时区时间及无效日历日期返回 400。
+        - 成功同时向 `MEMBER`/`ALUMNI` 全体发站内通知（type = ASSIGNMENT）。
+        - 创建时由标题生成唯一 slug。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAssignmentRequest'
+            example:
+              title: 第一次作业
+              description: 完成实验一并提交报告
+              startAt: '2026-11-01T00:00:00.000Z'
+              deadlineAt: '2026-11-30T23:59:59.000Z'
+      responses:
+        '201':
+          description: 发布成功，返回作业条目
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssignmentItem'
+        '400':
+          description: '时间非法 / 校验失败'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 400
+                error: Bad Request
+                message: startAt 必须是带 Z 的 ISO 8601 UTC 字符串
+                path: /api/v1/assignments
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /assignments/submissions/mine:
+    get:
+      tags: [作业]
+      summary: 我的提交记录
+      operationId: assignmentsMySubmissions
+      description: |
+        🔐 登录（`VISITOR` 403）。分页返回当前用户自己的作业提交记录。
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: 我的提交分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MySubmissionPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 'VISITOR 禁止查阅/提交作业'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /assignments/{id}:
+    get:
+      tags: [作业]
+      summary: 作业详情
+      operationId: assignmentsGet
+      description: |
+        🔐 登录（`VISITOR` 403）。`id` 可传 uuid 或 **slug**（uuid 优先匹配）。返回 AssignmentItem。
+      parameters:
+        - $ref: '#/components/parameters/ContentIdParam'
+      responses:
+        '200':
+          description: 作业条目
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssignmentItem'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 'VISITOR 禁止查阅/提交作业'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [作业]
+      summary: 编辑作业
+      operationId: assignmentsUpdate
+      description: |
+        🛡️ 角色：`ALUMNI`/`WHEEL`/`ADMIN` + 👤 仅发布者本人，或 🛡️ `ADMIN`（编辑任意作业）。
+        **仅 uuid 寻址**，传 slug 返回 400。字段可选：title / description / startAt / deadlineAt（时间格式要求同 4.5）。
+        失败：403 非发布者且非管理员；400 时间非法。
+      parameters:
+        - $ref: '#/components/parameters/ContentIdUuidParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAssignmentRequest'
+            example:
+              deadlineAt: '2026-12-07T23:59:59.000Z'
+      responses:
+        '200':
+          description: 更新后的作业条目
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssignmentItem'
+        '400':
+          description: '传入 slug（写接口仅接受 uuid）/ 时间非法'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '非发布者且非管理员'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 403
+                error: Forbidden
+                message: 无权访问该资源
+                path: /api/v1/assignments/018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /assignments/{id}/submissions:
+    get:
+      tags: [作业]
+      summary: 作业提交列表
+      operationId: assignmentsListSubmissions
+      description: |
+        🛡️ 角色：`ALUMNI`/`WHEEL`/`ADMIN` + 👤 该作业发布者本人，或 🛡️ `ADMIN`（任意作业）。
+        `id` 可传 uuid 或 slug（uuid 优先）。分页返回该作业的全部提交。
+        失败：403 非发布者且非管理员。
+      parameters:
+        - $ref: '#/components/parameters/ContentIdParam'
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: 提交分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmissionPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '非发布者且非管理员'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [作业]
+      summary: 提交作业
+      operationId: assignmentsSubmit
+      description: |
+        👤 仅 `MEMBER` / `ALUMNI` + ⏰ 处于可提交窗口（`OPEN`，截止判断以服务端时间为准）。`VISITOR`/`WHEEL`/`ADMIN` 403。
+        **仅 uuid 寻址**，传 slug 返回 400。
+
+        - `multipart/form-data`：`file` 必填（扩展名 + mime 双校验，白名单 `doc docx pdf png jpg jpeg zip`，≤10MB）；`note` 可选 ≤1000 字符。
+        - 重复提交覆盖旧提交（保留 `updated_at`）。
+        - 失败：403 角色不符或不在提交窗口；400 文件不合规。
+      parameters:
+        - $ref: '#/components/parameters/ContentIdUuidParam'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: 提交文件（白名单 + ≤10MB）
+                note:
+                  type: string
+                  maxLength: 1000
+                  description: 备注，可选
+      responses:
+        '201':
+          description: 提交成功（重复提交为覆盖后的提交）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmissionView'
+        '400':
+          description: '文件不合规 / 传入 slug（写接口仅接受 uuid）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 400
+                error: Bad Request
+                message: 文件不合规
+                path: /api/v1/assignments/018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e/submissions
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '角色不符（VISITOR/WHEEL/ADMIN）或不在提交窗口（超出提交时间）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 403
+                error: Forbidden
+                message: 无权访问该资源
+                path: /api/v1/assignments/018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e/submissions
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /assignments/files/{attachmentId}:
+    get:
+      tags: [作业]
+      summary: 下载作业附件
+      operationId: assignmentsDownloadFile
+      description: |
+        🔐 登录（`VISITOR` 403）+ 👤 提交者本人 / 该作业发布者（`ALUMNI`/`WHEEL`）/ `ADMIN`。
+        返回文件流（`Content-Disposition: attachment`）。
+        失败：403 无权；404 附件不存在。
+      parameters:
+        - name: attachmentId
+          in: path
+          required: true
+          description: 附件 uuid
+          schema:
+            type: string
+      responses:
+        '200':
+          description: '文件流（Content-Disposition: attachment）'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '无权下载（非提交者/发布者/管理员）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: '附件不存在'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /issues:
+    get:
+      tags: [讨论]
+      summary: Issue 列表
+      operationId: issuesList
+      description: |
+        🔐 登录。分页返回讨论 Issue 列表。
+
+        - 状态枚举固定三项：`OPEN`（未解决）/ `ANSWERED`（已解答）/ `ON_HOLD`（搁置）。
+        - `authorId` 支持 uuid / 用户名 / 邮箱 / 手机号（解析不到返回空列表，不报错）。
+        - 软删回复不计入 replyCount。
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - $ref: '#/components/parameters/KeywordParam'
+        - $ref: '#/components/parameters/TagFilterParam'
+        - $ref: '#/components/parameters/AuthorIdParam'
+        - name: status
+          in: query
+          required: false
+          description: 按状态过滤
+          schema:
+            type: string
+            enum: [OPEN, ANSWERED, ON_HOLD]
+      responses:
+        '200':
+          description: Issue 分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssuePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [讨论]
+      summary: 创建 Issue
+      operationId: issuesCreate
+      description: |
+        🔐 登录（**`VISITOR` 403**，仅可回复不可发起）。`MEMBER` 及以上可创建。
+
+        - 创建默认状态 `OPEN`；创建时由标题生成唯一 slug。
+        - `tags` 可选：≤10 项，每项 ≤30 字符。标题去空白后 ≤200 字符。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateIssueRequest'
+            example:
+              title: 实验环境搭建问题
+              content: 安装依赖时报错……
+              tags: [求助]
+      responses:
+        '201':
+          description: 创建成功，返回 Issue 详情（状态 OPEN）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssueDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 'VISITOR 不可发起讨论'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 403
+                error: Forbidden
+                message: 无权访问该资源
+                path: /api/v1/issues
+                timestamp: '2026-11-09T03:04:10.212Z'
+  /issues/{id}:
+    get:
+      tags: [讨论]
+      summary: Issue 详情
+      operationId: issuesGet
+      description: |
+        🔐 登录。`id` 可传 uuid 或 **slug**（uuid 优先匹配）。
+        返回 IssueDetail（IssueListItem + content + replies）。软删回复不出现在 replies 中。
+      parameters:
+        - $ref: '#/components/parameters/ContentIdParam'
+      responses:
+        '200':
+          description: Issue 详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssueDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /issues/{id}/replies:
+    post:
+      tags: [讨论]
+      summary: 回复 Issue
+      operationId: issuesReply
+      description: |
+        🔐 登录（**所有角色，含 `VISITOR`**）。**仅 uuid 寻址**，传 slug 返回 400。
+        失败：404 Issue 不存在。
+      parameters:
+        - $ref: '#/components/parameters/ContentIdUuidParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateReplyRequest'
+            example:
+              content: 我也遇到了，换源后解决。
+      responses:
+        '201':
+          description: 回复成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplyView'
+        '400':
+          description: '传入 slug（写接口仅接受 uuid）/ 校验失败'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: 'Issue 不存在'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /issues/{id}/status:
+    patch:
+      tags: [讨论]
+      summary: 变更 Issue 状态
+      operationId: issuesSetStatus
+      description: |
+        🛡️ 角色：仅 `ADMIN`、`ALUMNI`、`WHEEL`。**仅 uuid 寻址**，传 slug 返回 400。
+
+        - 状态枚举固定三项：`OPEN` | `ANSWERED` | `ON_HOLD`。
+        - 流转到 `ANSWERED` 时记录 `answeredBy` / `answeredAt`。
+      parameters:
+        - $ref: '#/components/parameters/ContentIdUuidParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IssueStatusRequest'
+            example:
+              status: ANSWERED
+      responses:
+        '200':
+          description: 变更后的 Issue 详情
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssueDetail'
+        '400':
+          description: '传入 slug（写接口仅接受 uuid）/ 校验失败'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /announcements:
+    get:
+      tags: [公告]
+      summary: 公告列表
+      operationId: announcementsList
+      description: 🔐 登录。分页返回公告列表（置顶公告含 `pinned` 标记）。keyword ≤100 字符模糊匹配标题/内容。
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - $ref: '#/components/parameters/KeywordParam'
+      responses:
+        '200':
+          description: 公告分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnouncementPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [公告]
+      summary: 发布公告
+      operationId: announcementsCreate
+      description: |
+        🛡️ 角色：仅 `WHEEL`、`ADMIN`。
+
+        - `pinned` 可选，置顶；`notify` 可选，发布同时向全员发站内通知（type = ANNOUNCEMENT）。
+        - `pinned` / `notify` 必须是布尔值，`null` 或字符串 `"false"` 返回 400。
+        - 创建时由标题生成唯一 slug。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAnnouncementRequest'
+            example:
+              title: 站点维护公告
+              content: 本周六凌晨维护……
+              pinned: true
+              notify: true
+      responses:
+        '201':
+          description: 发布成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnouncementItem'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /announcements/{id}:
+    get:
+      tags: [公告]
+      summary: 公告详情
+      operationId: announcementsGet
+      description: 🔐 登录。`id` 可传 uuid 或 **slug**（uuid 优先匹配）。软删公告 404。
+      parameters:
+        - $ref: '#/components/parameters/ContentIdParam'
+      responses:
+        '200':
+          description: 公告条目
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnouncementItem'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [公告]
+      summary: 编辑公告
+      operationId: announcementsUpdate
+      description: |
+        👤 作者本人或 🛡️ `ADMIN`。**仅 uuid 寻址**，传 slug 返回 400。
+        字段可选：title / content / pinned（布尔，null 或字符串 "false" 返回 400）。
+      parameters:
+        - $ref: '#/components/parameters/ContentIdUuidParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAnnouncementRequest'
+            example:
+              pinned: false
+      responses:
+        '200':
+          description: 更新后的公告条目
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnouncementItem'
+        '400':
+          description: '传入 slug（写接口仅接受 uuid）/ 校验失败'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '非作者且非管理员'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [公告]
+      summary: 删除公告
+      operationId: announcementsDelete
+      description: |
+        👤 作者本人或 🛡️ `ADMIN`。**仅 uuid 寻址**。
+        **软删除**：进回收站，可经 `POST /admin/trash/{type}/{id}/restore` 还原。
+      parameters:
+        - $ref: '#/components/parameters/ContentIdUuidParam'
+      responses:
+        '204':
+          description: 已软删进回收站，无响应体
+        '400':
+          description: '传入 slug（写接口仅接受 uuid）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '非作者且非管理员'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /resources:
+    get:
+      tags: [资源]
+      summary: 资源列表
+      operationId: resourcesList
+      description: |
+        🔐 登录。分页返回外链资源列表。分类枚举：`GITHUB | EXAM | EBOOK | DOCUMENT | OTHER`。
+        `creatorId` 支持 uuid / 用户名 / 邮箱 / 手机号（解析不到返回空列表，不报错）。
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - $ref: '#/components/parameters/KeywordParam'
+        - $ref: '#/components/parameters/TagFilterParam'
+        - $ref: '#/components/parameters/CreatorIdParam'
+        - name: category
+          in: query
+          required: false
+          description: 按分类过滤
+          schema:
+            $ref: '#/components/schemas/ResourceCategory'
+      responses:
+        '200':
+          description: 资源分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourcePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [资源]
+      summary: 创建资源
+      operationId: resourcesCreate
+      description: |
+        🛡️ 角色：仅 `WHEEL`、`ADMIN`。
+
+        - `url` 只允许带协议的 HTTP / HTTPS 链接（≤2048），FTP 等其他协议返回 400。
+        - `tags` 可选：≤10 项，每项 ≤30 字符。`description` 可选 ≤2000 字符。
+        - 创建时由标题生成唯一 slug。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateResourceRequest'
+            example:
+              title: USTIL 官方文档
+              description: 学习资料入口
+              url: https://openatomustil.cn/docs
+              category: DOCUMENT
+              tags: [USTIL, 文档]
+      responses:
+        '201':
+          description: 创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceItem'
+        '400':
+          description: 'url 非法（须为带协议的 HTTP/HTTPS 链接）/ 校验失败'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 400
+                error: Bad Request
+                message: url 必须是带协议的 HTTP/HTTPS 链接
+                path: /api/v1/resources
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /resources/{id}:
+    get:
+      tags: [资源]
+      summary: 资源详情
+      operationId: resourcesGet
+      description: 🔐 登录。`id` 可传 uuid 或 **slug**（uuid 优先匹配）。软删资源 404。
+      parameters:
+        - $ref: '#/components/parameters/ContentIdParam'
+      responses:
+        '200':
+          description: 资源条目
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceItem'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [资源]
+      summary: 编辑资源
+      operationId: resourcesUpdate
+      description: |
+        👤 创建者本人或 🛡️ `ADMIN`。**仅 uuid 寻址**，传 slug 返回 400。
+        字段可选：title / description / url / category / tags。url 校验同 7.3。
+      parameters:
+        - $ref: '#/components/parameters/ContentIdUuidParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateResourceRequest'
+            example:
+              description: 更新后的说明
+      responses:
+        '200':
+          description: 更新后的资源条目
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResourceItem'
+        '400':
+          description: '传入 slug（写接口仅接受 uuid）/ url 非法 / 校验失败'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '非创建者且非管理员'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [资源]
+      summary: 删除资源
+      operationId: resourcesDelete
+      description: |
+        👤 创建者本人或 🛡️ `ADMIN`。**仅 uuid 寻址**。
+        **软删除**：进回收站，可经 `POST /admin/trash/{type}/{id}/restore` 还原。
+      parameters:
+        - $ref: '#/components/parameters/ContentIdUuidParam'
+      responses:
+        '204':
+          description: 已软删进回收站，无响应体
+        '400':
+          description: '传入 slug（写接口仅接受 uuid）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '非创建者且非管理员'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /tags:
+    get:
+      tags: [标签]
+      summary: 标签列表
+      operationId: tagsList
+      description: |
+        🔐 登录。统一标签体系，覆盖 ARTICLE / ISSUE / RESOURCE（taggings 表）。
+        `count` 为引用计数（软删行不计）。
+      responses:
+        '200':
+          description: 标签数组
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TagView'
+              example:
+                - id: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+                  name: USTIL
+                  count: 12
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /notifications:
+    get:
+      tags: [通知]
+      summary: 通知列表
+      operationId: notificationsList
+      description: |
+        🔐 登录（仅本人）。分页返回当前用户的站内通知。
+        类型枚举：`ANNOUNCEMENT | ASSIGNMENT | ISSUE_REPLY | ROLE | SYSTEM | FOLLOW`。
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - name: unreadOnly
+          in: query
+          required: false
+          description: true 时仅返回未读通知
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: 通知分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /notifications/unread-count:
+    get:
+      tags: [通知]
+      summary: 未读数
+      operationId: notificationsUnreadCount
+      description: 🔐 登录。返回当前用户未读通知数量。
+      responses:
+        '200':
+          description: 未读数
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [count]
+                properties:
+                  count:
+                    type: integer
+              example:
+                count: 3
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /notifications/{id}/read:
+    patch:
+      tags: [通知]
+      summary: 标记单条已读
+      operationId: notificationsMarkRead
+      description: 🔐 登录（仅本人）。将本人某条通知标记为已读；通知 id 不存在或非本人返回 404。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 通知 uuid
+          schema:
+            type: string
+      responses:
+        '204':
+          description: 已标记为已读，无响应体
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /notifications/read-all:
+    post:
+      tags: [通知]
+      summary: 全部已读
+      operationId: notificationsReadAll
+      description: 🔐 登录（仅本人）。将当前用户全部未读通知标记为已读。
+      responses:
+        '204':
+          description: 已全部标记为已读，无响应体
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /storage/files/{key}:
+    get:
+      tags: [存储]
+      summary: 读取文件
+      operationId: storageGetFile
+      description: |
+        🔐 登录。读取受控存储中的文件。
+
+        - `key` = 存储 key（UUID + 扩展名，如 `0f8fad5b-d9cb-469f-a165-70867728950e.pdf`）；非法 key 格式返回 404。
+        - 对象存储 bucket 不开放公共访问，所有文件 URL 一律经本受控接口（`AttachmentView.url` 即指向这里）。
+        - 成功返回文件二进制（`Content-Type` 按扩展名推断，`Content-Disposition: inline`）。
+        - 作业附件下载请走 4.4（`Content-Disposition: attachment`）。
+      parameters:
+        - name: key
+          in: path
+          required: true
+          description: 存储 key（UUID + 扩展名）
+          schema:
+            type: string
+      responses:
+        '200':
+          description: '文件二进制（Content-Disposition: inline）'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: '文件不存在或 key 格式非法'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /admin/users:
+    get:
+      tags: [后台管理]
+      summary: 用户列表
+      operationId: adminListUsers
+      description: |
+        🛡️ 角色：`WHEEL`、`ADMIN`。分页返回用户列表，联系方式脱敏展示（contact 字段）。
+
+        - keyword ≤100，模糊匹配昵称/用户名——v10.0 起邮箱/手机号库内为密文，退出 keyword 模糊搜；精确寻址（role/status 过滤之外的标识解析）仍走 hmac 查找列，不受影响。
+        - `role` / `status` 可选过滤。
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - $ref: '#/components/parameters/KeywordParam'
+        - name: role
+          in: query
+          required: false
+          description: 按角色过滤
+          schema:
+            $ref: '#/components/schemas/Role'
+        - name: status
+          in: query
+          required: false
+          description: 按账号状态过滤
+          schema:
+            $ref: '#/components/schemas/UserStatus'
+      responses:
+        '200':
+          description: 后台用户分页（联系方式脱敏）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserPage'
+              example:
+                items:
+                  - id: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+                    nickname: 小明
+                    contact: u***@example.com
+                    role: MEMBER
+                    status: ACTIVE
+                    createdAt: '2026-11-09T03:04:10.212Z'
+                total: 1
+                page: 1
+                pageSize: 20
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/users/{id}/role:
+    patch:
+      tags: [后台管理]
+      summary: 修改用户角色
+      operationId: adminUpdateRole
+      description: |
+        🛡️ 角色：**仅 `ADMIN`**（`WHEEL` 403）。
+
+        - 寻址：`id` 支持 uuid / username / email / phone（uuid 优先），解析不到 404「用户不存在」。
+        - `role` 仅可授予/变更为 `VISITOR | MEMBER | ALUMNI | WHEEL`（**不能授予/变更为 `ADMIN`**，ADMIN 仅由种子脚本创建）。
+        - 目标是 `ADMIN` 账号时 403（不可修改）。操作同时递增目标 `sessionVersion` 强制重新登录。
+      parameters:
+        - $ref: '#/components/parameters/AdminUserRefParam'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminRoleRequest'
+            example:
+              role: WHEEL
+      responses:
+        '200':
+          description: 修改后的用户条目
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserView'
+        '400':
+          description: 'role 为 ADMIN 或非法枚举 / 校验失败'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 400
+                error: Bad Request
+                message: role 不能为 ADMIN
+                path: /api/v1/admin/users/018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e/role
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '非 ADMIN；或目标是 ADMIN 账号（不可被改角色）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 403
+                error: Forbidden
+                message: 无权访问该资源
+                path: /api/v1/admin/users/018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e/role
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '404':
+          description: '用户不存在（解析式寻址未命中）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 404
+                error: Not Found
+                message: 用户不存在
+                path: /api/v1/admin/users/nobody/role
+                timestamp: '2026-11-09T03:04:10.212Z'
+  /admin/users/{id}/promote:
+    post:
+      tags: [后台管理]
+      summary: 提前提拔
+      operationId: adminPromote
+      description: |
+        🛡️ 角色：`WHEEL`、`ADMIN`。
+
+        - 寻址：`id` 支持 uuid / username / email / phone（uuid 优先），解析不到 404「用户不存在」。
+        - `MEMBER` → `ALUMNI`（仅 `MEMBER` 可提拔，其他角色 403）。
+      parameters:
+        - $ref: '#/components/parameters/AdminUserRefParam'
+      responses:
+        '201':
+          description: 提拔成功，返回用户条目
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserView'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '目标角色不是 MEMBER（不可提拔）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 403
+                error: Forbidden
+                message: 无权访问该资源
+                path: /api/v1/admin/users/018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e/promote
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '404':
+          description: '用户不存在（解析式寻址未命中）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /admin/users/{id}:
+    delete:
+      tags: [后台管理]
+      summary: 剔除学员
+      operationId: adminDeleteUser
+      description: |
+        🛡️ 角色：`WHEEL`、`ADMIN`。
+
+        - 寻址：`id` 支持 uuid / username / email / phone（uuid 优先），解析不到 404「用户不存在」。
+        - **硬删 purge（单事务）**：删除账号，连同其名下文章/公告/资料/作业（含回收站软删行）一并硬删，级联删除其 issues/replies/提交（先清 taggings 再删内容）；名下作业已有他人提交的改派给操作者（不连带删他人提交）。
+        - **仅 `MEMBER` / `VISITOR` 可被剔除**，`ALUMNI` 及以上不可（403）；`ADMIN` 账号不可被删除（403）。
+        - 附件及受控头像的文件 key 与删号同事务写入 `file_deletions`，数据库提交后异步删除存储对象（删除幂等、失败重试）。
+      parameters:
+        - $ref: '#/components/parameters/AdminUserRefParam'
+      responses:
+        '204':
+          description: 已剔除，无响应体
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '目标角色不可剔除（ALUMNI 及以上 / ADMIN 账号）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 403
+                error: Forbidden
+                message: 无权访问该资源
+                path: /api/v1/admin/users/018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '404':
+          description: '用户不存在（解析式寻址未命中）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /admin/invite-codes:
+    get:
+      tags: [后台管理]
+      summary: 邀请码列表
+      operationId: adminListInviteCodes
+      description: 🛡️ 角色：`WHEEL`、`ADMIN`。分页返回邀请码列表，可按 `status`（`ACTIVE | REVOKED`）过滤。
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - name: status
+          in: query
+          required: false
+          description: 按邀请码状态过滤
+          schema:
+            type: string
+            enum: [ACTIVE, REVOKED]
+      responses:
+        '200':
+          description: 邀请码分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InviteCodePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [后台管理]
+      summary: 生成邀请码
+      operationId: adminCreateInviteCodes
+      description: |
+        🛡️ 角色：`WHEEL`、`ADMIN`。批量生成邀请码。
+
+        - `count` 生成个数 1~50，默认 1；`maxUses` 单码可用人数 1~100，默认 1；`expiresAt` 可选 ISO 8601 UTC 字符串。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateInviteCodesRequest'
+            example:
+              count: 3
+              maxUses: 2
+              expiresAt: '2026-12-31T23:59:59.000Z'
+      responses:
+        '201':
+          description: 生成成功
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/InviteCodeView'
+        '400':
+          description: 'count / maxUses 超出范围 / expiresAt 非法'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/invite-codes/{id}/revoke:
+    post:
+      tags: [后台管理]
+      summary: 作废邀请码
+      operationId: adminRevokeInviteCode
+      description: 🛡️ 角色：`WHEEL`、`ADMIN`。作废指定邀请码（状态置 `REVOKED`）。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 邀请码 uuid
+          schema:
+            type: string
+      responses:
+        '204':
+          description: 已作废，无响应体
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/stats:
+    get:
+      tags: [后台管理]
+      summary: 统计概览
+      operationId: adminStats
+      description: |
+        🛡️ 角色：`WHEEL`、`ADMIN`。返回角色人数统计、有效邀请码数与待清理访客数。
+        `visitorPendingCleanup`：注册已满 7 天仍为 `VISITOR` 的待清理账号数（每日 03:00 定时清理）。
+      responses:
+        '200':
+          description: 统计概览
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminStats'
+              example:
+                users:
+                  VISITOR: 2
+                  MEMBER: 20
+                  ALUMNI: 8
+                  WHEEL: 3
+                  ADMIN: 1
+                activeInviteCodes: 5
+                visitorPendingCleanup: 1
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/files:
+    get:
+      tags: [后台管理]
+      summary: 文件列表
+      operationId: adminListFiles
+      description: |
+        🛡️ 角色：`WHEEL`、`ADMIN`。分页返回文件列表（`createdAt` desc）。
+
+        - `ATTACHMENT` 来自 `attachments` 表（作业提交上传）；`AVATAR` 由 `users.avatar_url` 指向的存储文件合成（id 形如 `avatar:<userId>`，`createdAt` 取用户资料最后更新时间近似值）。
+        - `keyword` ≤100，按文件名模糊匹配。
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - $ref: '#/components/parameters/KeywordParam'
+        - name: kind
+          in: query
+          required: false
+          description: 按文件类型过滤
+          schema:
+            $ref: '#/components/schemas/FileKind'
+      responses:
+        '200':
+          description: 文件分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FilePage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/files/{id}/content:
+    get:
+      tags: [后台管理]
+      summary: 文件内容预览
+      operationId: adminFileContent
+      description: |
+        🛡️ 角色：`WHEEL`、`ADMIN`。返回文件字节流（`Content-Type` 按扩展名，`Content-Disposition: inline`，`Cache-Control: private, no-store`）。
+
+        - `id`：`ATTACHMENT` 传附件 uuid；`AVATAR` 传 `avatar:<userId>`。
+        - 头像可供管理人员预览；作业附件中 ADMIN 可读取，WHEEL 仅可读取其本人发布作业的附件；未关联提交的附件仅 ADMIN 可读取。
+        - 失败：400 id 非法；404 文件不存在。
+      parameters:
+        - $ref: '#/components/parameters/FileIdParam'
+      responses:
+        '200':
+          description: '文件字节流（Content-Disposition: inline）'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '400':
+          description: 'id 非法'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 400
+                error: Bad Request
+                message: 文件 id 非法
+                path: /api/v1/admin/files/bad-id/content
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: 'WHEEL 读取非本人发布作业的附件 / 未关联提交的附件'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: '文件不存在'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /admin/files/{id}:
+    delete:
+      tags: [后台管理]
+      summary: 删除文件
+      operationId: adminDeleteFile
+      description: |
+        🛡️ 角色：`WHEEL`、`ADMIN`。写入审计 `file.delete`。
+
+        - `AVATAR` 条目（id 形如 `avatar:<userId>`）删除即清空对应用户头像引用；`ATTACHMENT` 删除物理文件与记录。
+        - 失败：400 id 非法；404 文件不存在；409 文件使用中，不可删除（被作业提交或用户头像引用）。
+      parameters:
+        - $ref: '#/components/parameters/FileIdParam'
+      responses:
+        '204':
+          description: 已删除，无响应体
+        '400':
+          description: 'id 非法'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: '文件不存在'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: '文件使用中，不可删除（被作业提交或用户头像引用）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 409
+                error: Conflict
+                message: 文件使用中，不可删除
+                path: /api/v1/admin/files/018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+                timestamp: '2026-11-09T03:04:10.212Z'
+  /admin/trash:
+    get:
+      tags: [后台管理]
+      summary: 回收站列表
+      operationId: adminListTrash
+      description: |
+        🛡️ 角色：`WHEEL`、`ADMIN`。分页返回软删条目（文章/公告/资源/评论）。
+
+        - `type` 可选（`ARTICLE | ANNOUNCEMENT | RESOURCE | COMMENT`，大小写不敏感）；不传则四类合并按 `deletedAt` desc 分页。
+        - `original` 为删除时刻关键字段快照（还原依据）；审计 detail 保留删除前快照（标题/正文前 200 字）。
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - name: type
+          in: query
+          required: false
+          description: 按软删类型过滤（大小写不敏感）
+          schema:
+            $ref: '#/components/schemas/TrashType'
+      responses:
+        '200':
+          description: 回收站分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrashPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/trash/{type}/{id}/restore:
+    post:
+      tags: [后台管理]
+      summary: 还原回收站条目
+      operationId: adminRestoreTrash
+      description: |
+        🛡️ 角色：`WHEEL`、`ADMIN`。还原软删条目，写入审计 `article.restore` / `announcement.restore` / `resource.restore` / `comment.restore`。
+
+        - `type` = `ARTICLE | ANNOUNCEMENT | RESOURCE | COMMENT`（大小写不敏感）。
+        - 还原后完整可见（taggings 保留）。**重复恢复返回 409，非幂等 204**。
+        - 失败：404 条目不存在；409 内容未被删除，无需恢复。
+      parameters:
+        - name: type
+          in: path
+          required: true
+          description: 软删类型（大小写不敏感）
+          schema:
+            $ref: '#/components/schemas/TrashType'
+        - name: id
+          in: path
+          required: true
+          description: 条目 uuid
+          schema:
+            type: string
+      responses:
+        '204':
+          description: 已还原，无响应体
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: '条目不存在'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 404
+                error: Not Found
+                message: 条目不存在
+                path: /api/v1/admin/trash/ARTICLE/018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e/restore
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '409':
+          description: '内容未被删除，无需恢复（重复恢复返回 409，非幂等 204）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 409
+                error: Conflict
+                message: 内容未被删除，无需恢复
+                path: /api/v1/admin/trash/ARTICLE/018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e/restore
+                timestamp: '2026-11-09T03:04:10.212Z'
+  /admin/comments:
+    get:
+      tags: [后台管理]
+      summary: 评论列表
+      operationId: adminListComments
+      description: 🛡️ 角色：`WHEEL`、`ADMIN`。讨论回复（含软删条目）管理视图，分页返回。keyword ≤100 模糊匹配内容。
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - $ref: '#/components/parameters/KeywordParam'
+      responses:
+        '200':
+          description: 评论分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommentPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/comments/{id}:
+    delete:
+      tags: [后台管理]
+      summary: 删除评论
+      operationId: adminDeleteComment
+      description: 🛡️ 角色：`WHEEL`、`ADMIN`。软删讨论回复（进回收站，`COMMENT` 类型可经 11.12 还原）。
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: 回复 uuid
+          schema:
+            type: string
+      responses:
+        '204':
+          description: 已软删，无响应体
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/online-users:
+    get:
+      tags: [后台管理]
+      summary: 在线用户
+      operationId: adminOnlineUsers
+      description: 🛡️ 角色：`WHEEL`、`ADMIN`。返回最近 N 分钟内活跃的用户列表。
+      parameters:
+        - name: minutes
+          in: query
+          required: false
+          description: 时间窗口（分钟），1~1440，默认 15
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1440
+            default: 15
+      responses:
+        '200':
+          description: 在线用户视图
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OnlineUsersView'
+              example:
+                minutes: 15
+                total: 1
+                items:
+                  - userId: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+                    email: u***@example.com
+                    nickname: 小明
+                    role: MEMBER
+                    lastSeenAt: '2026-11-09T03:04:10.212Z'
+        '400':
+          description: 'minutes 超出 1~1440'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/audit-logs:
+    get:
+      tags: [后台管理]
+      summary: 操作审计日志
+      operationId: adminAuditLogs
+      description: |
+        🛡️ 角色：`WHEEL`、`ADMIN`。分页返回操作审计日志。
+        `actorId` 支持 uuid / 用户名 / 邮箱 / 手机号（解析不到返回空列表，不报错）。`detail` 为操作详情对象（含删除前快照）。
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - name: action
+          in: query
+          required: false
+          description: 按动作过滤，≤100 字符
+          schema:
+            type: string
+            maxLength: 100
+        - name: targetType
+          in: query
+          required: false
+          description: 按目标类型过滤，≤50 字符
+          schema:
+            type: string
+            maxLength: 50
+        - $ref: '#/components/parameters/ActorIdParam'
+      responses:
+        '200':
+          description: 审计日志分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/login-logs:
+    get:
+      tags: [后台管理]
+      summary: 登录日志
+      operationId: adminLoginLogs
+      description: |
+        🛡️ 角色：`WHEEL`、`ADMIN`。分页返回登录日志（成功与失败均记录，不落密码）。
+        `email` 为登录标识快照（邮箱或手机号），≤100 字符；`failReason` 区分 `用户不存在` / `密码错误` / `账号已封禁` / `登录尝试过于频繁`。
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - name: email
+          in: query
+          required: false
+          description: 按登录标识快照过滤，≤100 字符
+          schema:
+            type: string
+            maxLength: 100
+        - name: success
+          in: query
+          required: false
+          description: 按登录结果过滤
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: 登录日志分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginLogPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/request-logs:
+    get:
+      tags: [后台管理]
+      summary: 请求日志
+      operationId: adminRequestLogs
+      description: |
+        🛡️ 角色：`WHEEL`、`ADMIN`。记录范围为**全部 `/api/v1/**` 请求（含 GET）**，响应完成后异步写库、失败静默。
+        `userId` 支持 uuid / 用户名 / 邮箱 / 手机号（解析不到返回空列表，不报错）。
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+        - $ref: '#/components/parameters/UserIdParam'
+        - name: method
+          in: query
+          required: false
+          description: 按 HTTP 方法过滤
+          schema:
+            type: string
+            enum: [GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS]
+      responses:
+        '200':
+          description: 请求日志分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequestLogPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /admin/api-registry:
+    get:
+      tags: [后台管理]
+      summary: 接口清单
+      operationId: adminApiRegistry
+      description: |
+        🛡️ 角色：`WHEEL`、`ADMIN`。运行时枚举全站路由 + `@Public()` / `@Roles()` 元数据（含全局守卫「默认需登录」语义：`isPublic: false` 且 `roles: []` 表示任意已登录角色可访问）。
+
+        - 反射为控制器层元数据；Multer 等中间件层约束（上传字段名、大小限制）无法从路由元数据读取，需参见对应接口文档。
+        - 返回数组，按 `path` 升序排序。
+      responses:
+        '200':
+          description: 接口清单数组（按 path 升序）
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ApiRegistryItem'
+              example:
+                - method: GET
+                  path: /api/v1/articles
+                  isPublic: false
+                  roles: []
+                  controller: ArticlesController
+                  handler: list
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: access_token
+      description: |
+        httpOnly Cookie 双 token 之 `access_token`（JWT，含 `sub` = userId 与 `role`，TTL 15 分钟，Path `/`）。
+        前端无需手动携带 Header；改密/登出/封禁/角色变更后旧 token 失效（401）。
+    refreshCookieAuth:
+      type: apiKey
+      in: cookie
+      name: refresh_token
+      description: |
+        httpOnly Cookie `refresh_token`（JWT，含 `sub` + `jti`，TTL 7 天，Path `/api/v1/auth`），仅刷新/登出接口可见。
+        刷新时轮换：旧 `jti` 立即作废；旧 `jti` 复用视为窃取，清除该用户全部 refresh 并强制重登。
+  parameters:
+    PageParam:
+      name: page
+      in: query
+      required: false
+      description: 页码，正整数，默认 1；非法值返回 400
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSizeParam:
+      name: pageSize
+      in: query
+      required: false
+      description: 每页条数，1~100，默认 20；超出 100 直接 400 拒绝（不静默截断）
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    KeywordParam:
+      name: keyword
+      in: query
+      required: false
+      description: 关键词模糊搜索，≤100 字符
+      schema:
+        type: string
+        maxLength: 100
+    TagFilterParam:
+      name: tag
+      in: query
+      required: false
+      description: 按标签名过滤，≤30 字符
+      schema:
+        type: string
+        maxLength: 30
+    AuthorIdParam:
+      name: authorId
+      in: query
+      required: false
+      description: 按作者过滤；支持 uuid / 用户名 / 邮箱 / 手机号（解析式寻址），解析不到返回空列表（不报错）
+      schema:
+        type: string
+    CreatorIdParam:
+      name: creatorId
+      in: query
+      required: false
+      description: 按创建者过滤；支持 uuid / 用户名 / 邮箱 / 手机号（解析式寻址），解析不到返回空列表（不报错）
+      schema:
+        type: string
+    ActorIdParam:
+      name: actorId
+      in: query
+      required: false
+      description: 按操作者过滤；支持 uuid / 用户名 / 邮箱 / 手机号（解析式寻址），解析不到返回空列表（不报错）
+      schema:
+        type: string
+    UserIdParam:
+      name: userId
+      in: query
+      required: false
+      description: 按用户过滤；支持 uuid / 用户名 / 邮箱 / 手机号（解析式寻址），解析不到返回空列表（不报错）
+      schema:
+        type: string
+    ContentIdParam:
+      name: id
+      in: path
+      required: true
+      description: '内容 id：可传 uuid 或 slug（uuid 优先匹配）。详情类读接口支持 slug 寻址。'
+      schema:
+        type: string
+    ContentIdUuidParam:
+      name: id
+      in: path
+      required: true
+      description: '内容 id：仅接受 uuid（写接口：编辑/删除/审核/状态变更/回复/提交）；传 slug 返回 400。'
+      schema:
+        type: string
+    UserRefParam:
+      name: id
+      in: path
+      required: true
+      description: '用户 id：可传 uuid 或 username（uuid 优先匹配，含历史 handle）。'
+      schema:
+        type: string
+    AdminUserRefParam:
+      name: id
+      in: path
+      required: true
+      description: '用户标识（解析式寻址）：支持 uuid / username / email / phone（uuid → username（含历史 handle）→ email → phone 依次解析），解析不到返回 404「用户不存在」。'
+      schema:
+        type: string
+    UsernameParam:
+      name: username
+      in: path
+      required: true
+      description: 仅 username 寻址（主页 handle，2-32 位字母/数字/-/_，小写）
+      schema:
+        type: string
+    FileIdParam:
+      name: id
+      in: path
+      required: true
+      description: "文件 id：ATTACHMENT 传附件 uuid；AVATAR 传 'avatar:<userId>' 形式"
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: '400 参数校验失败 / 文件不合规 / 当前密码错误 / 两次输入的密码不一致 / 密码复杂度不足 / 验证码错误或已失效等'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            校验失败:
+              summary: 校验失败（message 为数组）
+              value:
+                statusCode: 400
+                error: Bad Request
+                message:
+                  - title must be shorter than or equal to 200 characters
+                  - tags must contain no more than 10 elements
+                path: /api/v1/articles
+                timestamp: '2026-11-09T03:04:10.212Z'
+            业务拒绝:
+              summary: 业务规则拒绝（message 为字符串）
+              value:
+                statusCode: 400
+                error: Bad Request
+                message: 两次输入的密码不一致
+                path: /api/v1/auth/register
+                timestamp: '2026-11-09T03:04:10.212Z'
+            验证码失效:
+              summary: 验证码错误或已失效（一次性消费 / 失败 3 次作废）
+              value:
+                statusCode: 400
+                error: Bad Request
+                message: 验证码错误或已失效
+                path: /api/v1/auth/login
+                timestamp: '2026-11-09T03:04:10.212Z'
+    Unauthorized:
+      description: '401 未登录或登录已过期'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            未登录:
+              value:
+                statusCode: 401
+                error: Unauthorized
+                message: 未登录或登录已过期
+                path: /api/v1/articles
+                timestamp: '2026-11-09T03:04:10.212Z'
+            账号或密码错误:
+              summary: 登录接口统一提示（不区分用户不存在/密码错误）
+              value:
+                statusCode: 401
+                error: Unauthorized
+                message: 账号或密码错误
+                path: /api/v1/auth/login
+                timestamp: '2026-11-09T03:04:10.212Z'
+    Forbidden:
+      description: '403 已登录但无权限 / 被封禁 / 超出提交时间 / VISITOR 访问作业'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            无权访问:
+              value:
+                statusCode: 403
+                error: Forbidden
+                message: 无权访问该资源
+                path: /api/v1/articles/1
+                timestamp: '2026-11-09T03:04:10.212Z'
+    NotFound:
+      description: '404 资源不存在或不可见'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            资源不可见:
+              value:
+                statusCode: 404
+                error: Not Found
+                message: 资源不存在或不可见
+                path: /api/v1/articles/hello-ustil
+                timestamp: '2026-11-09T03:04:10.212Z'
+            用户不存在:
+              summary: 解析式寻址未命中（封禁/解封/改角色/提拔/剔除等）
+              value:
+                statusCode: 404
+                error: Not Found
+                message: 用户不存在
+                path: /api/v1/admin/users/nobody/role
+                timestamp: '2026-11-09T03:04:10.212Z'
+    Conflict:
+      description: '409 状态冲突（标识被占用、邀请码无效/作废/过期/用尽、状态机不符、重复恢复等）'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            标识被占用:
+              value:
+                statusCode: 409
+                error: Conflict
+                message: 邮箱已被注册
+                path: /api/v1/auth/register
+                timestamp: '2026-11-09T03:04:10.212Z'
+            状态冲突:
+              summary: 回收站重复恢复
+              value:
+                statusCode: 409
+                error: Conflict
+                message: 内容未被删除，无需恢复
+                path: /api/v1/admin/trash/ARTICLE/018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e/restore
+                timestamp: '2026-11-09T03:04:10.212Z'
+    RateLimited:
+      description: '429 登录失败次数过多（同账号 + IP 15 分钟内失败 5 次，锁定 15 分钟）；或验证码获取超频（同 IP 每分钟 60 次）'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            statusCode: 429
+            error: Too Many Requests
+            message: 登录尝试过于频繁
+            path: /api/v1/auth/login
+            timestamp: '2026-11-09T03:04:10.212Z'
+    NoContent:
+      description: 操作成功，无响应体
+  schemas:
+    Error:
+      type: object
+      description: 全局失败响应体（AllExceptionsFilter 统一产出），字段一个不多一个不少
+      required: [statusCode, error, message, path, timestamp]
+      properties:
+        statusCode:
+          type: integer
+          examples: [403]
+        error:
+          type: string
+          examples: [Forbidden]
+        message:
+          description: 错误文案；校验失败时为字符串数组，业务失败时为单条字符串
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        path:
+          type: string
+          description: 请求路径（含 /api/v1 前缀）
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 UTC 字符串
+    PageMeta:
+      type: object
+      description: 分页信封公共字段（items 由各分页 schema 补充）
+      required: [total, page, pageSize]
+      properties:
+        total:
+          type: integer
+          description: 总条数
+        page:
+          type: integer
+          description: 当前页码
+        pageSize:
+          type: integer
+          description: 每页条数
+    Role:
+      type: string
+      description: |
+        RBAC 五级角色：`VISITOR` 临时访客（禁查/交作业，7 天未持码转正自动删号）/ `MEMBER` 学习成员 / `ALUMNI` 校友 / `WHEEL` 负责人 / `ADMIN` 管理员（不可被改角色/删除/封禁）
+      enum: [VISITOR, MEMBER, ALUMNI, WHEEL, ADMIN]
+    UserStatus:
+      type: string
+      description: 账号状态；`BANNED` 在 JwtAuthGuard 直接 403
+      enum: [ACTIVE, BANNED]
+    UserPublic:
+      type: object
+      description: 用户公开资料（author / creator / submitter 等字段）
+      required: [id, username, nickname, avatarUrl, role]
+      properties:
+        id:
+          type: string
+          description: uuid v7
+        username:
+          type: string
+          description: 主页 handle（2-32 位字母/数字/-/_，全站唯一，小写）
+        nickname:
+          type: string
+          maxLength: 50
+        avatarUrl:
+          type: [string, 'null']
+          maxLength: 1024
+        role:
+          $ref: '#/components/schemas/Role'
+    UserSelf:
+      type: object
+      description: |
+        本人资料（仅本人接口返回，含私有字段）。email / phone 绑定才返回；v10.0 起库内信封加密、接口仍明文。
+      required: [id, username, nickname, avatarUrl, role, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        username:
+          type: string
+        nickname:
+          type: string
+        avatarUrl:
+          type: [string, 'null']
+        role:
+          $ref: '#/components/schemas/Role'
+        status:
+          $ref: '#/components/schemas/UserStatus'
+        email:
+          type: string
+          description: 绑定才返回（v10.0 库内密文、接口明文）
+        phone:
+          type: string
+          description: 绑定才返回（v10.0 库内密文、接口明文）
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    AttachmentView:
+      type: object
+      description: 附件视图
+      required: [id, key, originalName, size, mime, url]
+      properties:
+        id:
+          type: string
+        key:
+          type: string
+          description: 存储 key（UUID + 扩展名）
+        originalName:
+          type: string
+        size:
+          type: integer
+          description: 字节数
+        mime:
+          type: string
+        url:
+          type: string
+          description: 指向 /api/v1/storage/files/:key（受控接口，bucket 不开放公共访问）
+    TagView:
+      type: object
+      description: 统一标签（覆盖 ARTICLE / ISSUE / RESOURCE）
+      required: [id, name, count]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          maxLength: 30
+        count:
+          type: integer
+          description: 引用计数（软删行不计）
+    CaptchaResponse:
+      type: object
+      description: 图形验证码（自绘 PNG；答案 sha256 存 Redis、TTL 5 分钟、一次性消费）
+      required: [captchaId, image]
+      properties:
+        captchaId:
+          type: string
+          description: 验证码 id（uuid），与 captchaCode 成对提交
+        image:
+          type: string
+          description: data URI（可直接作 <img src>），图片不含文字答案元数据
+    ProfileStats:
+      type: object
+      description: 个人主页聚合计数（软删不计）
+      required: [articles, issues, replies, submissions]
+      properties:
+        articles:
+          type: integer
+        issues:
+          type: integer
+        replies:
+          type: integer
+        submissions:
+          type: integer
+    PinnedItem:
+      type: object
+      description: 个人主页置顶项（仅保留仍存在且未软删的目标）
+      required: [type, id, slug, title]
+      properties:
+        type:
+          type: string
+          enum: [ARTICLE, ISSUE, RESOURCE]
+        id:
+          type: string
+        slug:
+          type: string
+        title:
+          type: string
+        url:
+          type: string
+          description: 可选直达链接
+    UserProfileView:
+      type: object
+      description: |
+        个人主页视图。company / location / link / socials 为 v9.0 公开资料字段（对齐 GitHub 语义，公开可见）；
+        email / phone 仅 isSelf 时返回（v10.0 库内信封密文、接口明文）。
+      required: [id, username, nickname, avatarUrl, role, bio, profileReadme, company, location, link, socials, createdAt, stats, topTags, pinnedItems, isSelf, isFollowing, followerCount, followingCount]
+      properties:
+        id:
+          type: string
+        username:
+          type: string
+        nickname:
+          type: string
+        avatarUrl:
+          type: [string, 'null']
+        role:
+          $ref: '#/components/schemas/Role'
+        bio:
+          type: [string, 'null']
+          maxLength: 100
+          description: 短简介（v10.0 库内密文、接口明文）
+        profileReadme:
+          type: [string, 'null']
+          maxLength: 10000
+          description: 个人介绍长文（v10.0 库内密文、接口明文）
+        company:
+          type: [string, 'null']
+          maxLength: 100
+          description: 公司/学校（v9.0 公开资料字段）
+        location:
+          type: [string, 'null']
+          maxLength: 100
+        link:
+          type: [string, 'null']
+          maxLength: 200
+          description: 个人链接（可裸域名，展示层补 https://）
+        socials:
+          type: array
+          maxItems: 4
+          items:
+            type: string
+            maxLength: 200
+          description: 社交账户链接（≤4 条，空串条目剔除）
+        createdAt:
+          type: string
+          format: date-time
+        stats:
+          $ref: '#/components/schemas/ProfileStats'
+        topTags:
+          type: array
+          maxItems: 10
+          items:
+            type: object
+            required: [name, count]
+            properties:
+              name:
+                type: string
+              count:
+                type: integer
+        pinnedItems:
+          type: array
+          maxItems: 6
+          items:
+            $ref: '#/components/schemas/PinnedItem'
+        isSelf:
+          type: boolean
+        isFollowing:
+          type: boolean
+        followerCount:
+          type: integer
+        followingCount:
+          type: integer
+        email:
+          type: string
+          description: 仅 isSelf 时返回（v10.0 库内密文、接口明文）
+        phone:
+          type: string
+          description: 仅 isSelf 时返回（v10.0 库内密文、接口明文）
+    ProfileReplyView:
+      type: object
+      description: 个人主页回复列表条目
+      required: [id, issueId, issueSlug, issueTitle, content, createdAt]
+      properties:
+        id:
+          type: string
+        issueId:
+          type: string
+        issueSlug:
+          type: string
+        issueTitle:
+          type: string
+        content:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    FollowUserView:
+      type: object
+      description: 粉丝/关注列表条目（排除封禁用户）
+      required: [id, username, nickname, avatarUrl, role, bio, isSelf, isFollowing]
+      properties:
+        id:
+          type: string
+        username:
+          type: string
+        nickname:
+          type: string
+        avatarUrl:
+          type: [string, 'null']
+        role:
+          $ref: '#/components/schemas/Role'
+        bio:
+          type: [string, 'null']
+        isSelf:
+          type: boolean
+        isFollowing:
+          type: boolean
+          description: 当前访问者是否已关注该用户
+    StatsBadgeItem:
+      type: object
+      description: shields.io endpoint 协议徽章（六枚：文章/讨论/回复/提交/近一年贡献/站内连击）
+      required: [schemaVersion, label, message, color]
+      properties:
+        schemaVersion:
+          type: integer
+          const: 1
+        label:
+          type: string
+        message:
+          type: string
+        color:
+          type: string
+    ActivityView:
+      type: object
+      description: 活跃热力图（近一年 UTC 日，五类事件按日求和、按日期升序）
+      required: [days]
+      properties:
+        days:
+          type: array
+          items:
+            type: object
+            required: [date, count]
+            properties:
+              date:
+                type: string
+                description: YYYY-MM-DD
+                examples: ['2026-11-09']
+              count:
+                type: integer
+    ArticleStatus:
+      type: string
+      description: |
+        文章状态：`PENDING` 待审（MEMBER 先审后发）/ `PUBLISHED` 已发布 / `REJECTED` 已拒绝 / `HIDDEN` 已隐藏。
+        非 PUBLISHED 仅作者与 WHEEL/ADMIN 可见（他人 404）。
+      enum: [PENDING, PUBLISHED, REJECTED, HIDDEN]
+    ArticleListItem:
+      type: object
+      description: 文章列表条目；readingMinutes 只读不存库，编辑正文后自动重算
+      required: [id, slug, title, excerpt, tags, status, readingMinutes, author, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        slug:
+          type: string
+          description: 由标题生成的唯一 slug
+        title:
+          type: string
+          maxLength: 200
+        excerpt:
+          type: string
+        tags:
+          type: array
+          maxItems: 10
+          items:
+            type: string
+            maxLength: 30
+        status:
+          $ref: '#/components/schemas/ArticleStatus'
+        readingMinutes:
+          type: integer
+          minimum: 1
+          description: 阅读时长（分钟）：中文 300 字/分钟、其他 200 词/分钟，混合累计向上取整，至少 1
+        author:
+          $ref: '#/components/schemas/UserPublic'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ArticleDetail:
+      type: object
+      description: 文章详情；reviewNote 拒绝/隐藏备注对作者可见（审核记录另有 reviewedBy / reviewedAt 服务端留档）
+      required: [id, slug, title, content, tags, status, reviewNote, readingMinutes, author, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        slug:
+          type: string
+        title:
+          type: string
+        content:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        status:
+          $ref: '#/components/schemas/ArticleStatus'
+        reviewNote:
+          type: [string, 'null']
+          maxLength: 500
+        readingMinutes:
+          type: integer
+          minimum: 1
+        author:
+          $ref: '#/components/schemas/UserPublic'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    AssignmentState:
+      type: string
+      description: |
+        作业状态由时间派生（服务端判定）：`NOT_STARTED` now < startAt（不可提交）/ `OPEN` startAt ≤ now ≤ deadlineAt / `CLOSED` now > deadlineAt（提交 403）。
+      enum: [NOT_STARTED, OPEN, CLOSED]
+    SubmissionView:
+      type: object
+      description: 作业提交视图
+      required: [id, assignmentId, submitter, note, attachment, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        assignmentId:
+          type: string
+        submitter:
+          $ref: '#/components/schemas/UserPublic'
+        note:
+          type: [string, 'null']
+          maxLength: 1000
+        attachment:
+          $ref: '#/components/schemas/AttachmentView'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    AssignmentItem:
+      type: object
+      description: 作业条目；canSubmit 仅 MEMBER/ALUMNI 且 state === OPEN 时为 true
+      required: [id, slug, title, description, startAt, deadlineAt, state, canSubmit, publisher, mySubmission, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        slug:
+          type: string
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+        startAt:
+          type: string
+          format: date-time
+          description: ISO 8601 UTC（带 Z，秒必填、毫秒可选最多 3 位）
+        deadlineAt:
+          type: string
+          format: date-time
+          description: ISO 8601 UTC（带 Z）
+        state:
+          $ref: '#/components/schemas/AssignmentState'
+        canSubmit:
+          type: boolean
+        publisher:
+          $ref: '#/components/schemas/UserPublic'
+        mySubmission:
+          oneOf:
+            - $ref: '#/components/schemas/SubmissionView'
+            - type: 'null'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    MySubmissionItem:
+      type: object
+      description: 我的提交记录条目
+      required: [id, assignmentId, assignmentSlug, assignmentTitle, startAt, deadlineAt, state, note, attachment, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        assignmentId:
+          type: string
+        assignmentSlug:
+          type: string
+        assignmentTitle:
+          type: string
+        startAt:
+          type: string
+          format: date-time
+        deadlineAt:
+          type: string
+          format: date-time
+        state:
+          $ref: '#/components/schemas/AssignmentState'
+        note:
+          type: [string, 'null']
+        attachment:
+          description: 附件摘要（无附件为 null）
+          oneOf:
+            - type: object
+              required: [id, fileName]
+              properties:
+                id:
+                  type: string
+                fileName:
+                  type: string
+            - type: 'null'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    IssueStatus:
+      type: string
+      description: |
+        Issue 状态枚举固定三项：`OPEN` 未解决 / `ANSWERED` 已解答（记录 answeredBy / answeredAt）/ `ON_HOLD` 搁置。
+      enum: [OPEN, ANSWERED, ON_HOLD]
+    IssueListItem:
+      type: object
+      description: Issue 列表条目
+      required: [id, slug, title, tags, status, author, replyCount, answeredBy, answeredAt, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        slug:
+          type: string
+        title:
+          type: string
+          maxLength: 200
+        tags:
+          type: array
+          items:
+            type: string
+        status:
+          $ref: '#/components/schemas/IssueStatus'
+        author:
+          $ref: '#/components/schemas/UserPublic'
+        replyCount:
+          type: integer
+        answeredBy:
+          oneOf:
+            - $ref: '#/components/schemas/UserPublic'
+            - type: 'null'
+        answeredAt:
+          type: [string, 'null']
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ReplyView:
+      type: object
+      description: 讨论回复（软删回复不出现在详情 replies 中，但后台 11.13 可见）
+      required: [id, content, author, createdAt]
+      properties:
+        id:
+          type: string
+        content:
+          type: string
+        author:
+          $ref: '#/components/schemas/UserPublic'
+        createdAt:
+          type: string
+          format: date-time
+    IssueDetail:
+      description: Issue 详情 = IssueListItem + content + replies
+      allOf:
+        - $ref: '#/components/schemas/IssueListItem'
+        - type: object
+          required: [content, replies]
+          properties:
+            content:
+              type: string
+            replies:
+              type: array
+              items:
+                $ref: '#/components/schemas/ReplyView'
+    AnnouncementItem:
+      type: object
+      description: 公告条目
+      required: [id, slug, title, content, pinned, authorId, authorName, authorUsername, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        slug:
+          type: string
+        title:
+          type: string
+          maxLength: 200
+        content:
+          type: string
+        pinned:
+          type: boolean
+        authorId:
+          type: string
+        authorName:
+          type: string
+        authorUsername:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ResourceCategory:
+      type: string
+      description: 资源分类枚举
+      enum: [GITHUB, EXAM, EBOOK, DOCUMENT, OTHER]
+    ResourceItem:
+      type: object
+      description: 外链资源条目；url 只允许带协议的 HTTP / HTTPS 链接
+      required: [id, slug, title, description, url, category, tags, creatorId, creatorName, creatorUsername, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        slug:
+          type: string
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: [string, 'null']
+          maxLength: 2000
+        url:
+          type: string
+          maxLength: 2048
+        category:
+          $ref: '#/components/schemas/ResourceCategory'
+        tags:
+          type: array
+          items:
+            type: string
+        creatorId:
+          type: string
+        creatorName:
+          type: string
+        creatorUsername:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    NotificationType:
+      type: string
+      description: 站内通知类型
+      enum: [ANNOUNCEMENT, ASSIGNMENT, ISSUE_REPLY, ROLE, SYSTEM, FOLLOW]
+    NotificationItem:
+      type: object
+      description: 站内通知条目（仅本人可见）
+      required: [id, type, title, body, link, readAt, createdAt]
+      properties:
+        id:
+          type: string
+        type:
+          $ref: '#/components/schemas/NotificationType'
+        title:
+          type: string
+        body:
+          type: [string, 'null']
+        link:
+          type: [string, 'null']
+        readAt:
+          type: [string, 'null']
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+    AdminUserView:
+      type: object
+      description: 后台用户条目（联系方式脱敏）
+      required: [id, nickname, contact, role, status, createdAt]
+      properties:
+        id:
+          type: string
+        nickname:
+          type: string
+        contact:
+          type: [string, 'null']
+          description: 邮箱/手机号脱敏展示（库内信封密文、接口脱敏明文）
+        role:
+          $ref: '#/components/schemas/Role'
+        status:
+          $ref: '#/components/schemas/UserStatus'
+        createdAt:
+          type: string
+          format: date-time
+    InviteCodeStatus:
+      type: string
+      enum: [ACTIVE, REVOKED]
+    InviteCodeView:
+      type: object
+      description: 邀请码条目
+      required: [id, code, status, maxUses, usedCount, remaining, expiresAt, createdAt]
+      properties:
+        id:
+          type: string
+        code:
+          type: string
+        status:
+          $ref: '#/components/schemas/InviteCodeStatus'
+        maxUses:
+          type: integer
+          minimum: 1
+          maximum: 100
+        usedCount:
+          type: integer
+        remaining:
+          type: integer
+        expiresAt:
+          type: [string, 'null']
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+    AdminStats:
+      type: object
+      description: 后台统计概览
+      required: [users, activeInviteCodes, visitorPendingCleanup]
+      properties:
+        users:
+          type: object
+          description: 各角色人数
+          properties:
+            VISITOR:
+              type: integer
+            MEMBER:
+              type: integer
+            ALUMNI:
+              type: integer
+            WHEEL:
+              type: integer
+            ADMIN:
+              type: integer
+        activeInviteCodes:
+          type: integer
+          description: 有效邀请码数
+        visitorPendingCleanup:
+          type: integer
+          description: 注册已满 7 天仍为 VISITOR 的待清理账号数（每日 03:00 定时清理）
+    FileKind:
+      type: string
+      description: '`ATTACHMENT` 作业提交上传；`AVATAR` 由 users.avatar_url 指向的存储文件合成（id 形如 avatar:<userId>）'
+      enum: [ATTACHMENT, AVATAR]
+    FileItem:
+      type: object
+      description: 后台文件条目（createdAt desc）
+      required: [id, fileName, sizeBytes, kind, uploaderId, uploaderEmail, isImage, referenced, createdAt]
+      properties:
+        id:
+          type: string
+          description: ATTACHMENT 传附件 uuid；AVATAR 形如 avatar:<userId>
+        fileName:
+          type: string
+        sizeBytes:
+          type: integer
+        kind:
+          $ref: '#/components/schemas/FileKind'
+        uploaderId:
+          type: string
+        uploaderEmail:
+          type: [string, 'null']
+        isImage:
+          type: boolean
+          description: 按扩展名 png/jpg/jpeg/gif/webp
+        referenced:
+          type: boolean
+          description: 是否被业务数据引用；AVATAR 恒为 false
+        createdAt:
+          type: string
+          format: date-time
+    TrashType:
+      type: string
+      description: 软删类型（接口按大小写不敏感解析）
+      enum: [ARTICLE, ANNOUNCEMENT, RESOURCE, COMMENT]
+    TrashItem:
+      type: object
+      description: 回收站条目（软删内容，可还原）
+      required: [id, type, title, summary, deletedAt, original]
+      properties:
+        id:
+          type: string
+        type:
+          $ref: '#/components/schemas/TrashType'
+        title:
+          type: string
+        summary:
+          type: string
+        deletedAt:
+          type: string
+          format: date-time
+        original:
+          type: object
+          description: 删除时刻关键字段快照（还原依据）
+          additionalProperties: true
+    CommentItem:
+      type: object
+      description: 评论（讨论回复）管理视图条目（含软删条目）
+      required: [id, issueId, issueTitle, authorId, authorName, content, createdAt, deletedAt]
+      properties:
+        id:
+          type: string
+        issueId:
+          type: string
+        issueTitle:
+          type: string
+        authorId:
+          type: string
+        authorName:
+          type: string
+        content:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        deletedAt:
+          type: [string, 'null']
+          format: date-time
+    OnlineUserItem:
+      type: object
+      required: [userId, email, nickname, role, lastSeenAt]
+      properties:
+        userId:
+          type: string
+        email:
+          type: [string, 'null']
+        nickname:
+          type: string
+        role:
+          $ref: '#/components/schemas/Role'
+        lastSeenAt:
+          type: string
+          format: date-time
+    OnlineUsersView:
+      type: object
+      description: 在线用户视图
+      required: [minutes, total, items]
+      properties:
+        minutes:
+          type: integer
+          description: 统计窗口（分钟）
+        total:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OnlineUserItem'
+    AuditLogItem:
+      type: object
+      description: 操作审计日志条目
+      required: [id, actorId, actorEmail, action, targetType, targetId, detail, createdAt]
+      properties:
+        id:
+          type: string
+        actorId:
+          type: string
+        actorEmail:
+          type: [string, 'null']
+        action:
+          type: string
+          description: 如 file.delete / article.restore 等
+        targetType:
+          type: string
+        targetId:
+          type: [string, 'null']
+        detail:
+          type: [object, 'null']
+          description: 操作详情（含删除前快照：标题/正文前 200 字）
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+    LoginLogItem:
+      type: object
+      description: 登录日志条目（成功与失败均记录，不落密码）
+      required: [id, userId, email, ip, userAgent, success, failReason, createdAt]
+      properties:
+        id:
+          type: string
+        userId:
+          type: [string, 'null']
+          description: 失败登录为空
+        email:
+          type: string
+          description: 登录标识快照（邮箱或手机号）
+        ip:
+          type: string
+        userAgent:
+          type: [string, 'null']
+        success:
+          type: boolean
+        failReason:
+          type: [string, 'null']
+          description: '用户不存在 / 密码错误 / 账号已封禁 / 登录尝试过于频繁'
+        createdAt:
+          type: string
+          format: date-time
+    RequestLogItem:
+      type: object
+      description: 请求日志条目（全部 /api/v1/** 请求含 GET，响应完成后异步写库、失败静默）
+      required: [id, method, path, statusCode, userId, userEmail, ip, durationMs, createdAt]
+      properties:
+        id:
+          type: string
+        method:
+          type: string
+        path:
+          type: string
+        statusCode:
+          type: integer
+        userId:
+          type: [string, 'null']
+        userEmail:
+          type: [string, 'null']
+        ip:
+          type: string
+        durationMs:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+    ApiRegistryItem:
+      type: object
+      description: 接口清单条目（运行时反射的控制器层元数据）
+      required: [method, path, isPublic, roles, controller, handler]
+      properties:
+        method:
+          type: string
+        path:
+          type: string
+          description: 含 /api/v1 前缀的完整路径
+        isPublic:
+          type: boolean
+          description: true 为 @Public()；false 且 roles 为空表示任意已登录角色可访问
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+        controller:
+          type: string
+        handler:
+          type: string
+    ProfileReplyPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/ProfileReplyView'
+    FollowUserPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/FollowUserView'
+    ArticlePage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/ArticleListItem'
+    AssignmentPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/AssignmentItem'
+    SubmissionPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/SubmissionView'
+    MySubmissionPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/MySubmissionItem'
+    IssuePage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/IssueListItem'
+    AnnouncementPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/AnnouncementItem'
+    ResourcePage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/ResourceItem'
+    NotificationPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/NotificationItem'
+    AdminUserPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/AdminUserView'
+    InviteCodePage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/InviteCodeView'
+    FilePage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/FileItem'
+    TrashPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/TrashItem'
+    CommentPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/CommentItem'
+    AuditLogPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/AuditLogItem'
+    LoginLogPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/LoginLogItem'
+    RequestLogPage:
+      allOf:
+        - $ref: '#/components/schemas/PageMeta'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/RequestLogItem'
+    RegisterRequest:
+      type: object
+      description: 注册请求（密码 8~128 位且四类字符至少两类；identifier 邮箱或手机号二选一）
+      required: [identifier, password, passwordConfirm, nickname, captchaId, captchaCode]
+      properties:
+        identifier:
+          type: string
+          description: 邮箱或手机号，二选一
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+          description: 大写/小写/数字/符号四类中至少两类
+        passwordConfirm:
+          type: string
+          format: password
+          description: 确认密码，必填，须与 password 一致
+        nickname:
+          type: string
+          maxLength: 50
+        inviteCode:
+          type: string
+          description: 可选；有效则注册为 MEMBER 并核销名额
+        captchaId:
+          type: string
+          description: 图形验证码 id（见 GET /auth/captcha）
+        captchaCode:
+          type: string
+          description: 图形验证码答案
+    InviteCodeRequest:
+      type: object
+      description: 持码转正请求（仅 VISITOR）
+      required: [inviteCode, captchaId, captchaCode]
+      properties:
+        inviteCode:
+          type: string
+        captchaId:
+          type: string
+        captchaCode:
+          type: string
+    LoginRequest:
+      type: object
+      description: 登录请求
+      required: [identifier, password, captchaId, captchaCode]
+      properties:
+        identifier:
+          type: string
+          description: 邮箱或手机号
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+        captchaId:
+          type: string
+        captchaCode:
+          type: string
+    ChangePasswordRequest:
+      type: object
+      description: 修改密码请求（newPassword 同注册复杂度规则）
+      required: [currentPassword, newPassword, captchaId, captchaCode]
+      properties:
+        currentPassword:
+          type: string
+          format: password
+        newPassword:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+        captchaId:
+          type: string
+        captchaCode:
+          type: string
+    UpdateMeRequest:
+      type: object
+      description: 修改本人资料请求（字段可选；昵称去空白后 ≤50）
+      properties:
+        nickname:
+          type: string
+          maxLength: 50
+        avatarUrl:
+          type: string
+          maxLength: 1024
+    ChangeIdentifierRequest:
+      type: object
+      description: 换绑邮箱/手机号请求（一个账号只绑定一个邮箱或一个手机号，换绑清空另一种标识）
+      required: [type, value, password, captchaId, captchaCode]
+      properties:
+        type:
+          type: string
+          enum: [email, phone]
+        value:
+          type: string
+          description: 新邮箱或手机号
+        password:
+          type: string
+          format: password
+          description: 当前密码
+        captchaId:
+          type: string
+        captchaCode:
+          type: string
+    ChangeUsernameRequest:
+      type: object
+      description: 修改主页用户名请求（2-32 位字母/数字/-/_，自动 trim 并转小写）
+      required: [username]
+      properties:
+        username:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{2,32}$'
+    ProfilePageRequest:
+      type: object
+      description: 编辑个人主页请求（字段均可选，传 null 清空；省略表示不动）
+      properties:
+        bio:
+          type: [string, 'null']
+          maxLength: 100
+        profileReadme:
+          type: [string, 'null']
+          maxLength: 10000
+        pinnedItems:
+          type: array
+          maxItems: 6
+          description: ≤6 项、不得重复、目标必须存在且属于本人；[] 清空
+          items:
+            type: object
+            required: [type, id]
+            properties:
+              type:
+                type: string
+                enum: [ARTICLE, ISSUE, RESOURCE]
+              id:
+                type: string
+                description: 目标 uuid
+        company:
+          type: [string, 'null']
+          maxLength: 100
+        location:
+          type: [string, 'null']
+          maxLength: 100
+        link:
+          type: [string, 'null']
+          maxLength: 200
+          description: 可裸域名
+        socials:
+          type: array
+          maxItems: 4
+          items:
+            type: string
+            maxLength: 200
+          description: ≤4 条、每条 ≤200（空串条目自动剔除）
+    CreateArticleRequest:
+      type: object
+      description: 创建文章请求（MEMBER 创建即 PENDING 待审；其余角色创建即 PUBLISHED）
+      required: [title, content]
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        content:
+          type: string
+        tags:
+          type: array
+          maxItems: 10
+          items:
+            type: string
+            maxLength: 30
+          description: 可选；显式 null 返回 400
+    UpdateArticleRequest:
+      type: object
+      description: 编辑文章请求（字段可选；tags [] 清空、null 返回 400）
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        content:
+          type: string
+        tags:
+          type: array
+          maxItems: 10
+          items:
+            type: string
+            maxLength: 30
+    ReviewRequest:
+      type: object
+      description: '文章审核请求。状态机：approve PENDING→PUBLISHED；reject PENDING→REJECTED；hide PUBLISHED→HIDDEN；unhide HIDDEN→PUBLISHED（不满足 409）'
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [approve, reject, hide, unhide]
+        note:
+          type: string
+          maxLength: 500
+          description: 审核备注，可选
+    CreateAssignmentRequest:
+      type: object
+      description: 发布作业请求（startAt / deadlineAt 必须是带 Z 的 ISO 8601 UTC 字符串，秒必填、毫秒最多 3 位）
+      required: [title, description, startAt, deadlineAt]
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+        startAt:
+          type: string
+          format: date-time
+          examples: ['2026-11-01T00:00:00.000Z']
+        deadlineAt:
+          type: string
+          format: date-time
+          examples: ['2026-11-30T23:59:59.000Z']
+    UpdateAssignmentRequest:
+      type: object
+      description: 编辑作业请求（字段可选；时间格式要求同创建）
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+        startAt:
+          type: string
+          format: date-time
+        deadlineAt:
+          type: string
+          format: date-time
+    CreateIssueRequest:
+      type: object
+      description: 创建 Issue 请求（VISITOR 403；创建默认 OPEN）
+      required: [title, content]
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        content:
+          type: string
+        tags:
+          type: array
+          maxItems: 10
+          items:
+            type: string
+            maxLength: 30
+    CreateReplyRequest:
+      type: object
+      description: 回复 Issue 请求（所有角色含 VISITOR 可用）
+      required: [content]
+      properties:
+        content:
+          type: string
+    IssueStatusRequest:
+      type: object
+      description: 变更 Issue 状态请求（仅 ADMIN/ALUMNI/WHEEL；流转到 ANSWERED 记录 answeredBy/answeredAt）
+      required: [status]
+      properties:
+        status:
+          $ref: '#/components/schemas/IssueStatus'
+    CreateAnnouncementRequest:
+      type: object
+      description: 发布公告请求（pinned / notify 可省略，必须是布尔值，null 或字符串 "false" 返回 400）
+      required: [title, content]
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        content:
+          type: string
+        pinned:
+          type: boolean
+          description: 置顶，可选
+        notify:
+          type: boolean
+          description: 发布同时向全员发站内通知，可选
+    UpdateAnnouncementRequest:
+      type: object
+      description: 编辑公告请求（字段可选）
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        content:
+          type: string
+        pinned:
+          type: boolean
+    CreateResourceRequest:
+      type: object
+      description: 创建资源请求（url 仅允许带协议的 HTTP/HTTPS 链接，FTP 等返回 400）
+      required: [title, url, category]
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 2000
+          description: 可选
+        url:
+          type: string
+          maxLength: 2048
+        category:
+          $ref: '#/components/schemas/ResourceCategory'
+        tags:
+          type: array
+          maxItems: 10
+          items:
+            type: string
+            maxLength: 30
+    UpdateResourceRequest:
+      type: object
+      description: 编辑资源请求（字段可选；url 校验同创建）
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 2000
+        url:
+          type: string
+          maxLength: 2048
+        category:
+          $ref: '#/components/schemas/ResourceCategory'
+        tags:
+          type: array
+          maxItems: 10
+          items:
+            type: string
+            maxLength: 30
+    AdminRoleRequest:
+      type: object
+      description: 修改用户角色请求（不能授予/变更为 ADMIN；目标是 ADMIN 账号 403）
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [VISITOR, MEMBER, ALUMNI, WHEEL]
+    CreateInviteCodesRequest:
+      type: object
+      description: 生成邀请码请求（count 1~50 默认 1；maxUses 1~100 默认 1；expiresAt 可选 ISO 8601 UTC）
+      properties:
+        count:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 1
+        maxUses:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 1
+        expiresAt:
+          type: string
+          format: date-time
+
+
+
+

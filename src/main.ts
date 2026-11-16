@@ -18,8 +18,11 @@ async function bootstrap(): Promise<void> {
   app.use(cookieParser());
   app.useGlobalPipes(appValidationPipe);
   // 全局异常过滤器经 APP_FILTER 注册（见 app.module.ts）
-  // 开发环境 CORS（携带凭证）
-  app.enableCors({ origin: cfg.corsOrigin, credentials: true });
+  // CORS（携带凭证）：CORS_ORIGIN 支持逗号分隔多源（v11.0 加入 docs 子域供文档站试调）
+  app.enableCors({
+    origin: cfg.corsOrigin.split(',').map((origin) => origin.trim()).filter(Boolean),
+    credentials: true,
+  });
 
   await app.listen(cfg.port);
 }

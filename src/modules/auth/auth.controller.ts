@@ -12,6 +12,7 @@ import {
 import type { Response } from 'express';
 import { CurrentAuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Public } from '../../common/decorators/public.decorator';
+import { Roles, Role } from '../../common/decorators/roles.decorator';
 import type { RequestWithCookies } from '../../common/types';
 import { AuthService } from './auth.service';
 import {
@@ -101,5 +102,13 @@ export class AuthController {
   @Get('me')
   me(@CurrentUser() user: CurrentAuthUser) {
     return this.authService.getMe(user.id);
+  }
+
+  /** 文档站访问探针（v11.0）：nginx auth_request 用——登录且 MEMBER+ 204；VISITOR 403；未登录 401 */
+  @Get('docs-probe')
+  @Roles(Role.MEMBER, Role.ALUMNI, Role.WHEEL, Role.ADMIN)
+  @HttpCode(204)
+  docsProbe(): void {
+    // 状态码即语义，无响应体
   }
 }

@@ -559,4 +559,28 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
     expect(inviteCodesRepository.findByCode).not.toHaveBeenCalled();
     expect(usersRepository.applyInviteCode).not.toHaveBeenCalled();
   });
+
+  // ===== 文档站访问探针（v11.0，nginx auth_request 门禁） =====
+
+  it('文档探针：未登录 401', async () => {
+    await request(app.getHttpServer()).get('/auth/docs-probe').expect(401);
+  });
+
+  it('文档探针：VISITOR 403，MEMBER 及以上 204', async () => {
+    usersRepository.findById.mockResolvedValue(row({ role: Role.VISITOR }));
+    await request(app.getHttpServer())
+      .get('/auth/docs-probe')
+      .set('Cookie', [`access_token=${tokenFor(Role.VISITOR)}`])
+      .expect(403);
+    usersRepository.findById.mockResolvedValue(row({ role: Role.MEMBER }));
+    await request(app.getHttpServer())
+      .get('/auth/docs-probe')
+      .set('Cookie', [`access_token=${tokenFor(Role.MEMBER)}`])
+      .expect(204);
+    usersRepository.findById.mockResolvedValue(row({ role: Role.ALUMNI }));
+    await request(app.getHttpServer())
+      .get('/auth/docs-probe')
+      .set('Cookie', [`access_token=${tokenFor(Role.ALUMNI)}`])
+      .expect(204);
+  });
 });
