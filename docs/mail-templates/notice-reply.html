@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>新回复提醒</title>
+</head>
+<body style="margin:0; padding:0; background-color:#f5f4ed; font-family:'PingFang SC','Hiragino Sans GB','Microsoft YaHei','Helvetica Neue',Arial,sans-serif; color:#141413;">
+  <table role="presentation" width="100%" border="0" cellpadding="0" cellspacing="0" style="background-color:#f5f4ed;">
+    <tr>
+      <td align="center" style="padding:28px 12px;">
+        <table role="presentation" width="600" border="0" cellpadding="0" cellspacing="0" style="width:100%; max-width:600px; background-color:#ffffff; border:1px solid #e3dacc; border-radius:16px;">
+
+          <!-- 品牌 -->
+          <tr>
+            <td style="padding:28px 36px 0;">
+              <span style="font-family:Georgia,'Times New Roman','Songti SC',serif; font-size:21px;">USTIL 开放论坛</span>
+              <span style="display:inline-block; width:26px; height:3px; background-color:#d97757; vertical-align:middle; margin:0 0 4px 10px;"></span>
+            </td>
+          </tr>
+
+          <!-- 正文 -->
+          <tr>
+            <td style="padding:24px 36px 0;">
+              <h1 style="margin:0; font-size:22px; font-weight:600;">{{actorNickname}} 回复了你的{{scope}}</h1>
+              <p style="margin:16px 0 0; font-size:15px; line-height:1.8; color:#3d3d3a;">在《{{contentTitle}}》中：</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:18px 36px 0;">
+              <div style="background-color:#faf9f5; border-left:3px solid #d97757; border-radius:0 8px 8px 0; padding:16px 18px; font-size:14px; line-height:1.9; color:#3d3d3a;">{{replyExcerpt}}</div>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding:24px 36px 8px;">
+              <table role="presentation" border="0" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="background-color:#c6613f; border-radius:12px;">
+                    <a href="https://forum.openatomustil.cn/{{actionPath}}" style="display:inline-block; padding:13px 34px; font-size:15px; font-weight:600; color:#ffffff; text-decoration:none;">查看完整回复</a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:18px 36px 30px;">
+              <p style="margin:0; font-size:13px; line-height:1.8; color:#87867f;">本邮件是站内通知的邮件副本。你可以在「个人中心 → 通知设置」中随时关闭邮件提醒。</p>
+            </td>
+          </tr>
+
+          <!-- 页脚 -->
+          <tr>
+            <td style="border-top:1px solid #e3dacc; padding:22px 36px 30px;">
+              <p style="margin:0; font-size:12px; line-height:1.9; color:#87867f;">
+                不想再收到此类邮件？<a href="https://forum.openatomustil.cn/{{unsubscribePath}}" style="color:#c46849; text-decoration:none;">一键退订</a><br>
+                本邮件由系统自动发送，请勿直接回复。<br>
+                © 2026 开放原子 USTIL 学生开源社区 · <a href="https://forum.openatomustil.cn" style="color:#c46849; text-decoration:none;">forum.openatomustil.cn</a> · 辽ICP备2026004720号
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
