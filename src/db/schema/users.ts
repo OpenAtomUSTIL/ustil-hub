@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { check, index, integer, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, varchar, uuid } from 'drizzle-orm/pg-core';
+import { boolean, check, index, integer, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, varchar, uuid } from 'drizzle-orm/pg-core';
 import { v7 as uuidv7 } from 'uuid';
 import { inviteCodes } from './invite_codes';
 
@@ -49,6 +49,10 @@ export const users = pgTable(
     cryptoId: varchar('crypto_id', { length: 32 }),
     emailHmac: varchar('email_hmac', { length: 64 }),
     phoneHmac: varchar('phone_hmac', { length: 64 }),
+    // v12.0 事务邮件：邮箱验证时间（注册/换绑经邮件验证码验证后写入；空 = 未验证）
+    emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
+    // v12.0 通知邮件副本总开关（默认关，用户自选；仅发给已验证邮箱）
+    emailNoticeEnabled: boolean('email_notice_enabled').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()

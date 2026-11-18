@@ -1,6 +1,9 @@
 import { NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { Role } from '../../common/decorators/roles.decorator';
+import { CryptoService } from '../../common/crypto/crypto.service';
+import { MAIL_RECIPIENT_RESOLVER } from '../mail/mail.types';
+import { MailService } from '../mail/mail.service';
 import { NotificationRow, NotificationsRepository } from './notifications.repository';
 import { NotificationsService } from './notifications.service';
 
@@ -31,15 +34,26 @@ describe('NotificationsService', () => {
     markRead: jest.fn(),
     markAllRead: jest.fn(),
   };
+  // v12.0 通知邮件副本：driver=none 短路（默认），用例切换 driver 验证发信路径
+  const mailService = { send: jest.fn(), driver: 'none' };
+  const cryptoStub = { hmac: (plaintext: string): string => 'h:' + plaintext };
+  const resolveMailRecipients = jest.fn();
 
   const me = { id: '01890a5d-ac96-7000-8000-000000000002', role: Role.MEMBER };
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    // clearAllMocks 不清实现，逐个复位避免用例间互相污染
+    repository.insertMany.mockReset();
+    mailService.driver = 'none';
+    resolveMailRecipients.mockResolvedValue([]);
     const moduleRef = await Test.createTestingModule({
       providers: [
         NotificationsService,
         { provide: NotificationsRepository, useValue: repository },
+        { provide: MailService, useValue: mailService },
+        { provide: CryptoService, useValue: cryptoStub },
+        { provide: MAIL_RECIPIENT_RESOLVER, useValue: resolveMailRecipients },
       ],
     }).compile();
     service = moduleRef.get(NotificationsService);
@@ -98,5 +112,72 @@ describe('NotificationsService', () => {
     const result = await service.unreadCount(me);
     expect(result).toEqual({ count: 3 });
     expect(repository.countUnread).toHaveBeenCalledWith(me.id);
+  });
+
+  // ===== 通知邮件副本（v12.0）=====
+
+  /** sendNoticeMails 是 void 副作用，先冲刷微任务再断言 */
+  const flushMails = () => new Promise((resolve) => setImmediate(resolve));
+
+  it('邮件副本：回复类通知发 notice-reply，带退订链接', async () => {
+    mailService.driver = 'smtp';
+    resolveMailRecipients.mockResolvedValue([
+      { userId: 'u-1', email: 'u1@example.com', nickname: 'U1' },
+    ]);
+
+    await service.notifyUsers(['u-1'], {
+      type: 'ISSUE_REPLY',
+      title: '讨论标题',
+      link: '/issues/1',
+      actorNickname: '张三',
+      excerpt: '回复摘要',
+    });
+    await flushMails();
+
+    expect(mailService.send).toHaveBeenCalledWith(
+      'u1@example.com',
+      'notice-reply',
+      expect.objectContaining({
+        actorNickname: '张三',
+        actionPath: 'issues/1',
+        unsubscribePath: expect.stringContaining('unsubscribe?token=u-1.'),
+      }),
+    );
+  });
+
+  it('邮件副本：通用通知发 notice-generic；driver=none 不解析收件人', async () => {
+    mailService.driver = 'api';
+    resolveMailRecipients.mockResolvedValue([
+      { userId: 'u-1', email: 'u1@example.com', nickname: 'U1' },
+    ]);
+
+    await service.notifyUsers(['u-1'], { type: 'ANNOUNCEMENT', title: '公告', body: '内容' });
+    await flushMails();
+
+    expect(mailService.send).toHaveBeenCalledWith(
+      'u1@example.com',
+      'notice-generic',
+      expect.objectContaining({ title: '公告', summary: '内容' }),
+    );
+
+    mailService.send.mockClear();
+    resolveMailRecipients.mockClear();
+    mailService.driver = 'none';
+    await service.notifyUsers(['u-1'], { type: 'ANNOUNCEMENT', title: '公告' });
+    await flushMails();
+    expect(resolveMailRecipients).not.toHaveBeenCalled();
+    expect(mailService.send).not.toHaveBeenCalled();
+  });
+
+  it('邮件副本：收件人解析失败静默降级，不影响站内通知', async () => {
+    mailService.driver = 'smtp';
+    resolveMailRecipients.mockRejectedValue(new Error('db down'));
+
+    await expect(
+      service.notifyUsers(['u-1'], { type: 'ROLE', title: '角色变更' }),
+    ).resolves.toBeUndefined();
+    await flushMails();
+    expect(repository.insertMany).toHaveBeenCalled();
+    expect(mailService.send).not.toHaveBeenCalled();
   });
 });

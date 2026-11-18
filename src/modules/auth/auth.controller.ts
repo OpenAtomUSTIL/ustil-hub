@@ -21,9 +21,13 @@ import {
   setAuthCookies,
 } from './cookies';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { EmailCodeDto } from './dto/email-code.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RedeemInviteCodeDto } from './dto/redeem-invite-code.dto';
 import { RegisterDto } from './dto/register.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
+import { UnsubscribeDto } from './dto/unsubscribe.dto';
 
 @Controller('auth')
 export class AuthController {
@@ -97,6 +101,38 @@ export class AuthController {
     @Body() dto: ChangePasswordDto,
   ): Promise<void> {
     await this.authService.changePassword(user.id, dto);
+  }
+
+  /** 拉取邮件验证码（v12.0）：注册 / 换绑邮箱，图形验证码前置 */
+  @Public()
+  @Post('email-code')
+  @HttpCode(204)
+  async sendEmailCode(@Body() dto: EmailCodeDto): Promise<void> {
+    await this.authService.sendEmailCode(dto);
+  }
+
+  /** 忘记密码（v12.0）：统一 204，不泄露账号是否存在 */
+  @Public()
+  @Post('password/forgot')
+  @HttpCode(204)
+  async forgotPassword(@Body() dto: ForgotPasswordDto): Promise<void> {
+    await this.authService.requestPasswordReset(dto);
+  }
+
+  /** 重置密码（v12.0）：一次性邮件链接 token */
+  @Public()
+  @Post('password/reset')
+  @HttpCode(204)
+  async resetPassword(@Body() dto: ResetPasswordDto): Promise<void> {
+    await this.authService.resetPassword(dto);
+  }
+
+  /** 一键退订通知邮件（v12.0）：token 化链接，无需登录 */
+  @Public()
+  @Post('unsubscribe')
+  @HttpCode(204)
+  async unsubscribe(@Body() dto: UnsubscribeDto): Promise<void> {
+    await this.authService.unsubscribe(dto);
   }
 
   @Get('me')

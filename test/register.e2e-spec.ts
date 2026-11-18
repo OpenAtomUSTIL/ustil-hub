@@ -16,7 +16,7 @@ import { JwtAuthGuard } from '../src/common/guards/jwt-auth.guard';
 import { RolesGuard } from '../src/common/guards/roles.guard';
 import { Role } from '../src/common/decorators/roles.decorator';
 import { AppConfig, configuration } from '../src/config/configuration';
-import { REDIS_CLIENT, REFRESH_TOKEN_STORE } from '../src/db/redis';
+import { REDIS_CLIENT, REFRESH_TOKEN_STORE, RedisClient } from '../src/db/redis';
 import { UserStatus } from '../src/db/schema';
 import { AuditLogService } from '../src/modules/audit/audit-log.service';
 import { LoginLogsService } from '../src/modules/audit/login-logs.service';
@@ -28,6 +28,10 @@ import { hashPassword } from '../src/modules/auth/password';
 import { JwtStrategy } from '../src/modules/auth/strategies/jwt.strategy';
 import { CaptchaController } from '../src/modules/captcha/captcha.controller';
 import { CaptchaService } from '../src/modules/captcha/captcha.service';
+import { EmailCodeService } from '../src/modules/mail/email-code.service';
+import { ResetTokenStore } from '../src/modules/mail/link-tokens';
+import { RESET_TOKEN_STORE } from '../src/modules/mail/mail.module';
+import { MailService } from '../src/modules/mail/mail.service';
 import { NotificationsService } from '../src/modules/notifications/notifications.service';
 import { TagsService } from '../src/modules/tags/tags.service';
 import { UploadsService } from '../src/modules/storage/uploads.service';
@@ -58,6 +62,19 @@ const testConfig: AppConfig = {
     },
   },
   uploadMaxSize: 10485760,
+  mail: {
+    driver: 'none',
+    from: '',
+    linkBase: 'https://forum.openatomustil.cn',
+    templateIds: {
+      'verify-code': 0,
+      'reset-password': 0,
+      'notice-reply': 0,
+      'notice-generic': 0,
+    },
+    api: { secretId: '', secretKey: '', region: 'ap-guangzhou' },
+    smtp: { host: '', port: 465, user: '', pass: '' },
+  },
 };
 
 /** 32 字节 base64 测试主密钥（仅测试进程使用；格式同 .env.example 的 APP_ENCRYPTION_KEY） */
@@ -104,6 +121,11 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
     register: jest.fn(),
     rotate: jest.fn(),
     revokeAll: jest.fn(),
+  };
+  // v12.0 事务邮件：发信桩（从 send 入参捕获验证码），EmailCodeService 走真实逻辑 + FakeRedis
+  const mailService = {
+    send: jest.fn(),
+    driver: 'none',
   };
 
   /** 构造 users 行桩数据：入参 email/phone 为明文，落库形态为信封 token + HMAC 查找列（v10.0） */
@@ -157,6 +179,30 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
     return { captchaId: res.body.captchaId, captchaCode: 'ABCDE' };
   }
 
+  /** 拉邮件验证码（v12.0）：走真实 /auth/email-code 链路，从发信桩捕获的 verify-code 邮件变量取码 */
+  async function emailCodeOf(email: string, purpose: 'register' | 'rebind' = 'register'): Promise<string> {
+    await request(app.getHttpServer())
+      .post('/auth/email-code')
+      .send({ email, purpose, ...(await captchaOf()) })
+      .expect(204);
+    const calls = mailService.send.mock.calls as unknown as [string, string, { code: string }][];
+    const [to, kind, vars] = calls[calls.length - 1];
+    expect(to).toBe(email);
+    expect(kind).toBe('verify-code');
+    expect(vars.code).toMatch(/^\d{6}$/);
+    return vars.code;
+  }
+
+  /** 合法注册请求体：真实拉码（purpose=register，一次性消费）+ 独立图形验证码 */
+  async function registerPayload(overrides: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+    return {
+      ...registerBody,
+      emailCode: await emailCodeOf('a@example.com'),
+      ...(await captchaOf()),
+      ...overrides,
+    };
+  }
+
   const tokenFor = (role: Role): string =>
     jwtService.sign(
       { sub: SELF_ID, role, sessionVersion: 0 },
@@ -187,6 +233,10 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
         { provide: JwtService, useValue: new JwtService({ secret: testConfig.jwtAccessSecret }) },
         { provide: REDIS_CLIENT, useValue: fakeRedis },
         { provide: REFRESH_TOKEN_STORE, useValue: refreshStore },
+        // v12.0：邮件验证码真实链路（FakeRedis 模拟限频/存码 Lua），重置 token 用真实一次性 store
+        EmailCodeService,
+        { provide: MailService, useValue: mailService },
+        { provide: RESET_TOKEN_STORE, useValue: new ResetTokenStore(fakeRedis as unknown as RedisClient) },
         { provide: configuration.KEY, useValue: testConfig },
         JwtStrategy,
         { provide: APP_GUARD, useClass: JwtAuthGuard },
@@ -229,7 +279,7 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
 
     const res = await request(app.getHttpServer())
       .post('/auth/register')
-      .send({ ...registerBody, ...(await captchaOf()) })
+      .send(await registerPayload())
       .expect(201);
 
     expect(usersRepository.insert).toHaveBeenCalledWith(
@@ -250,15 +300,15 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
   it.each(['a@example.com', ' A@Example.com '])('旧账号尚未回填也拒绝重复邮箱注册：%s', async (email) => {
     usersRepository.findIdentifierCandidates.mockResolvedValue([{ ...row(), email, emailHmac: null, cryptoId: null }]);
     const res = await request(app.getHttpServer()).post('/auth/register')
-      .send({ ...registerBody, ...(await captchaOf()) }).expect(409);
-    expect(res.body.message).toBe('该邮箱或手机号已被注册');
+      .send(await registerPayload()).expect(409);
+    expect(res.body.message).toBe('该邮箱已被注册');
     expect(usersRepository.insert).not.toHaveBeenCalled();
   });
 
   it('缺失 HMAC 的加密邮箱也不能重复注册', async () => {
     usersRepository.findIdentifierCandidates.mockResolvedValue([row({ emailHmac: null })]);
     await request(app.getHttpServer()).post('/auth/register')
-      .send({ ...registerBody, ...(await captchaOf()) }).expect(409);
+      .send(await registerPayload()).expect(409);
     expect(usersRepository.insert).not.toHaveBeenCalled();
   });
 
@@ -269,7 +319,7 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
 
     const res = await request(app.getHttpServer())
       .post('/auth/register')
-      .send({ ...registerBody, inviteCode: 'abcd2345ef', ...(await captchaOf()) })
+      .send(await registerPayload({ inviteCode: 'abcd2345ef' }))
       .expect(201);
 
     expect(inviteCodesRepository.findByCode).toHaveBeenCalledWith('ABCD2345EF');
@@ -286,7 +336,7 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
 
     const res = await request(app.getHttpServer())
       .post('/auth/register')
-      .send({ ...registerBody, inviteCode: 'ABCD2345EF', ...(await captchaOf()) })
+      .send(await registerPayload({ inviteCode: 'ABCD2345EF' }))
       .expect(409);
 
     expect(res.body.message).toBe('邀请码已被用尽');
@@ -298,7 +348,7 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
 
     const res = await request(app.getHttpServer())
       .post('/auth/register')
-      .send({ ...registerBody, inviteCode: 'ABCD2345EF', ...(await captchaOf()) })
+      .send(await registerPayload({ inviteCode: 'ABCD2345EF' }))
       .expect(409);
 
     expect(res.body.message).toBe('邀请码已作废');
@@ -312,7 +362,7 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
 
     const res = await request(app.getHttpServer())
       .post('/auth/register')
-      .send({ ...registerBody, inviteCode: 'ABCD2345EF', ...(await captchaOf()) })
+      .send(await registerPayload({ inviteCode: 'ABCD2345EF' }))
       .expect(409);
 
     expect(res.body.message).toBe('邀请码已过期');
@@ -323,7 +373,7 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
 
     const res = await request(app.getHttpServer())
       .post('/auth/register')
-      .send({ ...registerBody, inviteCode: 'NOPE2345XX', ...(await captchaOf()) })
+      .send(await registerPayload({ inviteCode: 'NOPE2345XX' }))
       .expect(409);
 
     expect(res.body.message).toBe('邀请码无效');
@@ -332,11 +382,11 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
   it('落库失败：回退核销计数', async () => {
     inviteCodesRepository.findByCode.mockResolvedValue(codeRow);
     inviteCodesRepository.tryConsume.mockResolvedValue({ ...codeRow, usedCount: 1 });
-    usersRepository.insert.mockRejectedValue(new ConflictException('该邮箱或手机号已被注册'));
+    usersRepository.insert.mockRejectedValue(new ConflictException('该邮箱已被注册'));
 
     await request(app.getHttpServer())
       .post('/auth/register')
-      .send({ ...registerBody, inviteCode: 'ABCD2345EF', ...(await captchaOf()) })
+      .send(await registerPayload({ inviteCode: 'ABCD2345EF' }))
       .expect(409);
 
     expect(inviteCodesRepository.release).toHaveBeenCalledWith(codeRow.id);
@@ -347,7 +397,7 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
   it('注册确认密码不一致：400「两次输入的密码不一致」', async () => {
     const res = await request(app.getHttpServer())
       .post('/auth/register')
-      .send({ ...registerBody, passwordConfirm: 'other-pass-1', ...(await captchaOf()) })
+      .send({ ...registerBody, emailCode: '000000', passwordConfirm: 'other-pass-1', ...(await captchaOf()) })
       .expect(400);
 
     expect(res.body.message).toEqual(expect.arrayContaining(['两次输入的密码不一致']));
@@ -359,6 +409,7 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
       .post('/auth/register')
       .send({
         ...registerBody,
+        emailCode: '000000',
         password: 'abcdefgh',
         passwordConfirm: 'abcdefgh',
         ...(await captchaOf()),
@@ -370,19 +421,30 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
     );
   });
 
-  it('identifier 格式非法：400', async () => {
+  it('手机号注册：400（v12.0 仅邮箱注册）', async () => {
     const res = await request(app.getHttpServer())
       .post('/auth/register')
-      .send({ ...registerBody, identifier: 'not-an-email', ...(await captchaOf()) })
+      .send({ ...registerBody, identifier: '13800138000', emailCode: '000000', ...(await captchaOf()) })
       .expect(400);
 
-    expect(res.body.message).toEqual(expect.arrayContaining(['请输入合法的邮箱或手机号']));
+    expect(res.body.message).toEqual(expect.arrayContaining(['请输入合法的邮箱']));
+    expect(usersRepository.insert).not.toHaveBeenCalled();
+  });
+
+  it('emailCode 缺失：400（v12.0 邮件验证码必填）', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/auth/register')
+      .send({ ...registerBody, ...(await captchaOf()) })
+      .expect(400);
+
+    expect(res.body.message).toEqual(expect.arrayContaining(['验证码不能为空']));
+    expect(usersRepository.insert).not.toHaveBeenCalled();
   });
 
   it('captchaId / captchaCode 缺失：400', async () => {
     const res = await request(app.getHttpServer())
       .post('/auth/register')
-      .send(registerBody)
+      .send({ ...registerBody, emailCode: '000000' })
       .expect(400);
 
     expect(res.body.message).toEqual(
@@ -391,30 +453,40 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
     expect(usersRepository.insert).not.toHaveBeenCalled();
   });
 
-  it('错误验证码：400「验证码错误或已失效」', async () => {
+  it('错误图形验证码：400「验证码错误或已失效」', async () => {
     const { captchaId, captchaCode } = await captchaOf();
     const wrongCode = captchaCode[0] === 'A' ? `B${captchaCode.slice(1)}` : `A${captchaCode.slice(1)}`;
 
     const res = await request(app.getHttpServer())
       .post('/auth/register')
-      .send({ ...registerBody, captchaId, captchaCode: wrongCode })
+      .send({ ...registerBody, emailCode: '000000', captchaId, captchaCode: wrongCode })
       .expect(400);
 
     expect(res.body.message).toBe('验证码错误或已失效');
     expect(usersRepository.insert).not.toHaveBeenCalled();
   });
 
-  it('验证码过期（模拟 TTL 过后）：400', async () => {
+  it('图形验证码过期（模拟 TTL 过后）：400', async () => {
     const { captchaId, captchaCode } = await captchaOf();
     // TTL 过后 Redis 键消失：显式删除模拟 5 分钟到期
     await fakeRedis.del(`captcha:${captchaId}`);
 
     const res = await request(app.getHttpServer())
       .post('/auth/register')
-      .send({ ...registerBody, captchaId, captchaCode })
+      .send({ ...registerBody, emailCode: '000000', captchaId, captchaCode })
       .expect(400);
 
     expect(res.body.message).toBe('验证码错误或已失效');
+  });
+
+  it('邮件验证码错误：400「验证码错误或已失效」且不落库', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/auth/register')
+      .send({ ...registerBody, emailCode: '000000', ...(await captchaOf()) })
+      .expect(400);
+
+    expect(res.body.message).toBe('验证码错误或已失效');
+    expect(usersRepository.insert).not.toHaveBeenCalled();
   });
 
   it('正确验证码全链路注册成功', async () => {
@@ -422,25 +494,31 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
 
     const res = await request(app.getHttpServer())
       .post('/auth/register')
-      .send({ ...registerBody, ...(await captchaOf()) })
+      .send(await registerPayload())
       .expect(201);
 
     expect(res.body.id).toBe(SELF_ID);
     expect(usersRepository.insert).toHaveBeenCalledTimes(1);
+    // v12.0：注册即视为邮箱已验证
+    expect(usersRepository.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ emailVerifiedAt: expect.any(Date) }),
+      expect.anything(),
+    );
   });
 
   it('验证码一次性：同 captchaId 复用第二次 400', async () => {
     usersRepository.insert.mockResolvedValue(row({ role: Role.VISITOR }));
     const captcha = await captchaOf();
+    const emailCode = await emailCodeOf('a@example.com');
 
     await request(app.getHttpServer())
       .post('/auth/register')
-      .send({ ...registerBody, ...captcha })
+      .send({ ...registerBody, emailCode, ...captcha })
       .expect(201);
 
     const res = await request(app.getHttpServer())
       .post('/auth/register')
-      .send({ ...registerBody, ...captcha })
+      .send({ ...registerBody, emailCode, ...captcha })
       .expect(400);
 
     expect(res.body.message).toBe('验证码错误或已失效');
@@ -510,39 +588,52 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
     expect(usersRepository.updatePasswordHash).not.toHaveBeenCalled();
   });
 
-  it('换绑邮箱带正确验证码：200 成功', async () => {
+  it('换绑邮箱带正确验证码：200 成功（v12.0 需新邮箱邮件验证码）', async () => {
     usersRepository.updateIdentifier.mockResolvedValue(row({ email: 'new@example.com', phone: null }));
+    const emailCode = await emailCodeOf('new@example.com', 'rebind');
 
     const res = await request(app.getHttpServer())
       .put('/users/me/identifier')
       .set('Cookie', [`access_token=${tokenFor(Role.MEMBER)}`])
-      .send({ type: 'email', value: 'new@example.com', password: 'password123', ...(await captchaOf()) })
+      .send({ type: 'email', value: 'new@example.com', password: 'password123', emailCode, ...(await captchaOf()) })
       .expect(200);
 
+    // v12.0：只更新 email 字段（附加绑定语义），并记邮箱验证时间
     expect(usersRepository.updateIdentifier).toHaveBeenCalledWith(
       SELF_ID,
       expect.objectContaining({
-        phone: null,
-        phoneHmac: null,
         emailHmac: testCrypto.hmac('new@example.com'),
+        emailVerifiedAt: expect.any(Date),
       }),
       expect.anything(),
     );
     // 库内为信封 token（非明文）；接口响应仍是明文
-    const patch = usersRepository.updateIdentifier.mock.calls[0][1];
+    const patch = usersRepository.updateIdentifier.mock.calls[0][1] as Record<string, unknown>;
     expect(patch.email).toMatch(/^v1\./);
-    expect(testCrypto.open('email', patch.email, SELF_CRYPTO_ID)).toBe('new@example.com');
+    expect(testCrypto.open('email', patch.email as string, SELF_CRYPTO_ID)).toBe('new@example.com');
+    expect(patch).not.toHaveProperty('phone');
+    expect(patch).not.toHaveProperty('phoneHmac');
     expect(res.body.email).toBe('new@example.com');
   });
 
-  it('换绑错误验证码：400 且不落库', async () => {
+  it('换绑邮箱邮件验证码错误：400 且不落库', async () => {
+    await request(app.getHttpServer())
+      .put('/users/me/identifier')
+      .set('Cookie', [`access_token=${tokenFor(Role.MEMBER)}`])
+      .send({ type: 'email', value: 'new@example.com', password: 'password123', emailCode: '000000', ...(await captchaOf()) })
+      .expect(400);
+
+    expect(usersRepository.updateIdentifier).not.toHaveBeenCalled();
+  });
+
+  it('换绑错误图形验证码：400 且不落库', async () => {
     const { captchaId, captchaCode } = await captchaOf();
     const wrongCode = captchaCode[0] === 'A' ? `B${captchaCode.slice(1)}` : `A${captchaCode.slice(1)}`;
 
     await request(app.getHttpServer())
       .put('/users/me/identifier')
       .set('Cookie', [`access_token=${tokenFor(Role.MEMBER)}`])
-      .send({ type: 'email', value: 'new@example.com', password: 'password123', captchaId, captchaCode: wrongCode })
+      .send({ type: 'email', value: 'new@example.com', password: 'password123', emailCode: '000000', captchaId, captchaCode: wrongCode })
       .expect(400);
 
     expect(usersRepository.updateIdentifier).not.toHaveBeenCalled();

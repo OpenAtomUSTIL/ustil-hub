@@ -40,4 +40,45 @@ export const envValidationSchema = Joi.object({
   UPLOAD_MAX_SIZE: Joi.number().integer().positive().default(10485760),
   ADMIN_EMAIL: Joi.string().allow('').optional(),
   ADMIN_PASSWORD: Joi.string().allow('').optional(),
+  // —— 事务邮件（v12.0，腾讯云邮件推送 SES）——
+  // 注意：deploy compose 白名单透传时未配置项为空串，校验必须 allow('')；
+  // driver=api|smtp 时对应项用 alternatives().conditional 严格必填（空串不放行，启动即拒）
+  MAIL_DRIVER: Joi.string().valid('api', 'smtp', 'none').default('none'),
+  MAIL_FROM: Joi.alternatives().conditional('MAIL_DRIVER', {
+    is: Joi.string().valid('api', 'smtp'),
+    then: Joi.string().min(1).required(),
+    otherwise: Joi.string().allow(''),
+  }),
+  // 邮件链接固定域名（腾讯模板审核规范）
+  MAIL_LINK_BASE: Joi.string().default('https://forum.openatomustil.cn'),
+  // 腾讯云 SES 控制台模板 ID（api 驱动必填）
+  MAIL_TPL_VERIFY_ID: Joi.alternatives().conditional('MAIL_DRIVER', {
+    is: 'api', then: Joi.number().integer().required(), otherwise: Joi.number().integer().allow(''),
+  }),
+  MAIL_TPL_RESET_ID: Joi.alternatives().conditional('MAIL_DRIVER', {
+    is: 'api', then: Joi.number().integer().required(), otherwise: Joi.number().integer().allow(''),
+  }),
+  MAIL_TPL_NOTICE_REPLY_ID: Joi.alternatives().conditional('MAIL_DRIVER', {
+    is: 'api', then: Joi.number().integer().required(), otherwise: Joi.number().integer().allow(''),
+  }),
+  MAIL_TPL_NOTICE_ID: Joi.alternatives().conditional('MAIL_DRIVER', {
+    is: 'api', then: Joi.number().integer().required(), otherwise: Joi.number().integer().allow(''),
+  }),
+  MAIL_API_SECRET_ID: Joi.alternatives().conditional('MAIL_DRIVER', {
+    is: 'api', then: Joi.string().min(1).required(), otherwise: Joi.string().allow(''),
+  }),
+  MAIL_API_SECRET_KEY: Joi.alternatives().conditional('MAIL_DRIVER', {
+    is: 'api', then: Joi.string().min(1).required(), otherwise: Joi.string().allow(''),
+  }),
+  MAIL_API_REGION: Joi.string().default('ap-guangzhou'),
+  SMTP_HOST: Joi.alternatives().conditional('MAIL_DRIVER', {
+    is: 'smtp', then: Joi.string().min(1).required(), otherwise: Joi.string().allow(''),
+  }),
+  SMTP_PORT: Joi.number().integer().positive().default(465),
+  SMTP_USER: Joi.alternatives().conditional('MAIL_DRIVER', {
+    is: 'smtp', then: Joi.string().min(1).required(), otherwise: Joi.string().allow(''),
+  }),
+  SMTP_PASS: Joi.alternatives().conditional('MAIL_DRIVER', {
+    is: 'smtp', then: Joi.string().min(1).required(), otherwise: Joi.string().allow(''),
+  }),
 });

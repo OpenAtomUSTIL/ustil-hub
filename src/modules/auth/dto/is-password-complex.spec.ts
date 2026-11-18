@@ -37,6 +37,7 @@ describe('RegisterDto 校验（class-validator）', () => {
     captchaId: 'captcha-1',
     captchaCode: 'ABCDE',
     identifier: 'a@example.com',
+    emailCode: '123456',
     password: 'password123',
     passwordConfirm: 'password123',
     nickname: '测试用户',
@@ -45,6 +46,23 @@ describe('RegisterDto 校验（class-validator）', () => {
   it('合法注册体通过校验', async () => {
     const dto = plainToInstance(RegisterDto, base);
     expect(await validate(dto)).toEqual([]);
+  });
+
+  it('identifier 仅允许邮箱（v12.0）：手机号 / 非邮箱拒绝', async () => {
+    const phone = plainToInstance(RegisterDto, { ...base, identifier: '13800138000' });
+    const phoneErrors = await validate(phone);
+    expect(phoneErrors.map((e) => e.property)).toContain('identifier');
+
+    const invalid = plainToInstance(RegisterDto, { ...base, identifier: 'not-an-email' });
+    const invalidErrors = await validate(invalid);
+    expect(invalidErrors.map((e) => e.property)).toContain('identifier');
+  });
+
+  it('emailCode 缺失：校验失败（v12.0 邮件验证码必填）', async () => {
+    const dto = plainToInstance(RegisterDto, { ...base, emailCode: undefined });
+    const errors = await validate(dto);
+    const properties = errors.map((e) => e.property);
+    expect(properties).toContain('emailCode');
   });
 
   it('两次密码不一致：400 文案「两次输入的密码不一致」', async () => {
@@ -68,6 +86,7 @@ describe('RegisterDto 校验（class-validator）', () => {
   it('captchaId / captchaCode 缺失：校验失败（敏感字段必填）', async () => {
     const dto = plainToInstance(RegisterDto, {
       identifier: 'a@example.com',
+      emailCode: '123456',
       password: 'password123',
       passwordConfirm: 'password123',
       nickname: '测试用户',

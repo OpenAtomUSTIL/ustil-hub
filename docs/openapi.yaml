@@ -13,10 +13,10 @@ info:
     - **认证方式**：httpOnly Cookie 双 token，前端无需手动携带 Header。
       - `access_token`：JWT（`sub` = userId，`role`），TTL 15 分钟，Path `/`；
       - `refresh_token`：JWT（`sub` + `jti`），刷新时轮换，TTL 7 天，Path `/api/v1/auth`。
-    - **会话失效**：改密码 / 登出 / 封禁 / 角色变更 → 清空该用户全部 refresh 并递增 `sessionVersion`，旧 access/refresh 同时失效（后续请求 401）。
+    - **会话失效**：改密码 / 重置密码 / 登出 / 封禁 / 角色变更 → 清空该用户全部 refresh 并递增 `sessionVersion`，旧 access/refresh 同时失效（后续请求 401）。
     - **成功响应**：直接返回业务数据体（对象或数组），不包裹 `code/message/data`。
     - **失败响应**（全局 `AllExceptionsFilter` 统一产出）：`{ statusCode, error, message, path, timestamp }`；`message` 可为 `string` 或 `string[]`（校验错误）。
-    - **错误码语义**：`400` 参数校验失败 / 文件不合规 / 当前密码错误 / 两次输入的密码不一致 / 密码复杂度不足 / 验证码错误或已失效；`401` 未登录或登录已过期；`403` 已登录但无权限 / 被封禁 / 超出提交时间 / `VISITOR` 访问作业；`404` 资源不存在或不可见；`409` 状态冲突（标识被占用、邀请码无效/作废/过期/用尽）；`429` 登录失败次数过多，临时锁定。
+    - **错误码语义**：`400` 参数校验失败 / 文件不合规 / 当前密码错误 / 两次输入的密码不一致 / 密码复杂度不足 / 验证码错误或已失效 / 链接无效或已过期；`401` 未登录或登录已过期；`403` 已登录但无权限 / 被封禁 / 超出提交时间 / `VISITOR` 访问作业；`404` 资源不存在或不可见；`409` 状态冲突（标识被占用、邀请码无效/作废/过期/用尽）；`429` 登录失败次数过多 / 注册尝试过频 / 邮件验证码拉取过频 / 图形验证码获取过频，临时限制。
     - **分页**：请求 `?page=1&pageSize=20`（`pageSize` 默认 20、上限 100，超出直接 400 拒绝，不静默截断）；响应 `{ items, total, page, pageSize }`。
     - **时间**：一律 ISO 8601 UTC 字符串（`2026-11-09T03:04:10.212Z`）；不接受 Unix 时间戳、无时区时间或无效日历日期。
     - **校验**：全局 `ValidationPipe` 开启 `whitelist + forbidNonWhitelisted`，请求体中出现未声明字段直接 400。标题与昵称创建/更新时去除首尾空白后校验，纯空白返回 400；标题最长 200 字符、昵称最长 50 字符。
@@ -24,7 +24,8 @@ info:
     - **权限标注**：description 中 `🔓公开` 无需登录；`🔐登录` 任意已登录角色；`🛡️角色` 需指定角色；`👤` 需资源归属（所有者）校验；`⏰` 受业务状态/时间窗口约束。
     - **slug 寻址（去 id 化）**：文章 / 作业 / 公告 / 资源 / Issue 创建时由标题生成唯一 slug（URL 不暴露裸 id）。详情类读接口 `:id` 可传 uuid 或 slug（uuid 优先匹配）；写接口（编辑 / 删除 / 审核 / 状态变更 / 回复 / 提交）仅接受 uuid，传 slug 返回 400。
     - **解析式寻址（用户）**：用户读接口 `:id` 可传 uuid 或 username；用户管理类路径参数（封禁 / 解封 / 改角色 / 提前提拔 / 剔除学员）支持 uuid / username / email / phone 四种标识（uuid → username（含历史 handle）→ email → phone 依次解析），解析不到返回 404「用户不存在」。查询过滤参数（`userId` / `actorId` / `authorId` / `creatorId` 等）同样支持四种标识，解析不到返回空列表（不报错）。
-    - **图形验证码**：`captchaId` + `captchaCode` 为注册 / 登录 / 改密 / 换绑 / 持码转正的必填字段；一次性消费（校验通过即作废，复用直接失败），单 `captchaId` 校验失败 3 次作废；校验失败统一 400「验证码错误或已失效」（不区分过期 / 错误 / 已消费）；获取图片按客户端 IP 限每分钟 60 次（超限 429），与登录/注册失败限流叠加。
+    - **图形验证码**：`captchaId` + `captchaCode` 为注册 / 登录 / 改密 / 换绑 / 持码转正 / 拉取邮件验证码 / 忘记密码的必填字段；一次性消费（校验通过即作废，复用直接失败），单 `captchaId` 校验失败 3 次作废；校验失败统一 400「验证码错误或已失效」（不区分过期 / 错误 / 已消费）；获取图片按客户端 IP 限每分钟 60 次（超限 429），与登录/注册失败限流叠加。
+    - **事务邮件（v12.0）**：注册仅邮箱且须邮件验证码验证（purpose=register）；换绑邮箱须新邮箱验证码（purpose=rebind）；忘记密码走邮件一次性重置链接（30 分钟、一次性）；通知邮件受「邮件提醒」总开关 `emailNoticeEnabled` 约束（默认关），邮件内附一键退订链接（token 180 天有效）。邮件验证码与链接 token 均一次性消费。
     - **软删除与 purge**：文章 / 公告 / 资源 / 评论（讨论回复）的 DELETE 为软删（置 `deleted_at`）进回收站，可经 `POST /admin/trash/{type}/{id}/restore` 还原；软删期间列表/详情/搜索/tag 过滤/tag 计数均排除软删行（详情 404），`taggings` 保留、恢复后完整可见；重复恢复返回 409。剔除学员为硬删 purge（单事务）：连同名下文章/公告/资料/作业（含回收站软删行）一并硬删，级联其 issues/replies/提交，已有他人提交的作业改派给操作者（不连带删他人提交）。
     - **个人字段信封加密（v10.0）**：`email` / `phone` / `bio` / `company` / `location` / `link` / `socials` / `profileReadme` 库内为 AES-256-GCM 信封密文（配 `email_hmac` / `phone_hmac` 精确查找列）。**API 契约不变——请求/响应仍为明文**，加解密仅在服务端内部完成，本文件所有接口语义不受影响。后台用户 keyword 模糊搜只搜昵称/用户名（密文不可模糊检索）。
     - **文件上传**（头像、作业提交共用规则）：扩展名 + mime 双校验，白名单 `doc docx pdf png jpg jpeg zip`，单文件 ≤10MB（`UPLOAD_MAX_SIZE` 可配）；存储 key 为 UUID + 扩展名，文件 URL 一律经受控接口（bucket 不开放公共访问）。
@@ -37,9 +38,9 @@ servers:
     description: 本地调试（自签证书，见 deploy/init-certs.sh）
 tags:
   - name: 认证
-    description: 注册、登录、令牌刷新、密码与图形验证码（/auth）
+    description: 注册、登录、令牌刷新、密码、图形与邮件验证码、退订（/auth）
   - name: 用户
-    description: 本人资料、个人主页、关注关系与公开徽章（/users）
+    description: 本人资料、个人主页、通知邮件偏好、关注关系与公开徽章（/users）
   - name: 文章
     description: 文章创作、审核状态机与可见性（/articles）
   - name: 作业
@@ -67,12 +68,13 @@ paths:
       summary: 注册
       operationId: authRegister
       description: |
-        🔓 公开。邮箱或手机号二选一注册。
+        🔓 公开。仅邮箱注册（v12.0 起手机号改为可选附加绑定），注册前须先经 /auth/email-code 拉取邮件验证码（purpose=register）。
 
+        - 邮箱验证：`emailCode` 发往 identifier 邮箱，一次性消费，校验通过即视为邮箱已验证。
         - 密码规则：8~128 位，且 大写/小写/数字/符号 四类中至少两类（错误文案「密码需包含大写字母、小写字母、数字、符号中的至少两类」）；`passwordConfirm` 与 `password` 不一致 → 400「两次输入的密码不一致」。
         - 有有效邀请码 → 注册为 `MEMBER` 并核销名额；无码 → `VISITOR`（7 天内可持码经 /auth/invite-code 转正，逾期自动删号）。
         - 成功写入 `access_token` / `refresh_token` 双 token Cookie。
-        - 失败：400 参数非法 / 两次输入的密码不一致 / 密码复杂度不足 / 验证码错误或已失效；409 邮箱/手机号已注册、邀请码无效/已作废/已过期/已被用尽。
+        - 失败：400 参数非法 / 两次输入的密码不一致 / 密码复杂度不足 / 验证码错误或已失效（图形或邮件验证码）；409 邮箱已注册、邀请码无效/已作废/已过期/已被用尽；429 同 IP 15 分钟内注册尝试超过 10 次。
       requestBody:
         required: true
         content:
@@ -81,6 +83,7 @@ paths:
               $ref: '#/components/schemas/RegisterRequest'
             example:
               identifier: user@example.com
+              emailCode: '482913'
               password: Str0ngPass!23
               passwordConfirm: Str0ngPass!23
               nickname: 小明
@@ -110,7 +113,7 @@ paths:
                 createdAt: '2026-11-09T03:04:10.212Z'
                 updatedAt: '2026-11-09T03:04:10.212Z'
         '400':
-          description: '参数校验失败 / 两次输入的密码不一致「两次输入的密码不一致」/ 密码复杂度不足「密码需包含大写字母、小写字母、数字、符号中的至少两类」/ 验证码错误或已失效「验证码错误或已失效」'
+          description: '参数校验失败 / 两次输入的密码不一致「两次输入的密码不一致」/ 密码复杂度不足「密码需包含大写字母、小写字母、数字、符号中的至少两类」/ 图形或邮件验证码错误或已失效「验证码错误或已失效」'
           content:
             application/json:
               schema:
@@ -132,7 +135,7 @@ paths:
                     path: /api/v1/auth/register
                     timestamp: '2026-11-09T03:04:10.212Z'
         '409':
-          description: '邮箱/手机号已注册；或邀请码无效/已作废/已过期/已被用尽'
+          description: '邮箱已注册；或邀请码无效/已作废/已过期/已被用尽'
           content:
             application/json:
               schema:
@@ -140,7 +143,7 @@ paths:
               example:
                 statusCode: 409
                 error: Conflict
-                message: 邮箱已被注册
+                message: 该邮箱已被注册
                 path: /api/v1/auth/register
                 timestamp: '2026-11-09T03:04:10.212Z'
         '429':
@@ -390,6 +393,20 @@ paths:
                 $ref: '#/components/schemas/UserSelf'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /auth/docs-probe:
+    get:
+      tags: [认证]
+      summary: 文档站访问探针
+      operationId: authDocsProbe
+      description: |
+        🔐 登录且 `MEMBER` 及以上。API 文档站（`docs.` 子域）的访问门禁探针——由入口 nginx `auth_request` 转发登录 Cookie 探测，无请求/响应体，状态码即语义。
+      responses:
+        '204':
+          description: 登录且 MEMBER 及以上，放行（无响应体）
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /auth/captcha:
     get:
       tags: [认证]
@@ -433,6 +450,168 @@ paths:
                 message: 请求过于频繁
                 path: /api/v1/auth/captcha
                 timestamp: '2026-11-09T03:04:10.212Z'
+  /auth/email-code:
+    post:
+      tags: [认证]
+      summary: 拉取邮件验证码
+      operationId: authSendEmailCode
+      description: |
+        🔓 公开。注册 / 换绑邮箱统一入口（v12.0）：向指定邮箱发送 6 位数字验证码，图形验证码前置防轰炸。
+
+        - purpose=register：发往待注册邮箱（配合 /auth/register）；purpose=rebind：发往新邮箱（配合 /users/me/identifier 换绑）。
+        - 验证码 10 分钟有效，只发邮件、**不返回响应体**（204）；一次性消费，输错 3 次作废（与图形验证码同口径，统一 400「验证码错误或已失效」）。
+        - 失败：400 图形验证码错误或已失效 / 邮箱格式非法 / purpose 非法；429 同一邮箱 1 分钟 1 封 / 1 小时 5 封（「邮件发送过于频繁，请稍后再试」）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendEmailCodeRequest'
+            example:
+              email: user@example.com
+              purpose: register
+              captchaId: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+              captchaCode: 7k2p
+      responses:
+        '204':
+          description: 验证码已发送至邮件，无响应体
+        '400':
+          description: '图形验证码错误或已失效「验证码错误或已失效」/ 邮箱格式非法 / purpose 非法'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 400
+                error: Bad Request
+                message: 验证码错误或已失效
+                path: /api/v1/auth/email-code
+                timestamp: '2026-11-09T03:04:10.212Z'
+        '429':
+          description: '同一邮箱 1 分钟 1 封 / 1 小时 5 封，超限「邮件发送过于频繁，请稍后再试」'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 429
+                error: Too Many Requests
+                message: 邮件发送过于频繁，请稍后再试
+                path: /api/v1/auth/email-code
+                timestamp: '2026-11-09T03:04:10.212Z'
+  /auth/password/forgot:
+    post:
+      tags: [认证]
+      summary: 忘记密码
+      operationId: authForgotPassword
+      description: |
+        🔓 公开。发起密码重置邮件（v12.0）。
+
+        - **无论账号是否存在均返回 204**（防账号枚举）；账号存在且未封禁时才发送一次性重置链接（30 分钟有效，经 /auth/password/reset 兑换）。
+        - 失败：400 验证码错误或已失效 / 邮箱格式非法。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordRequest'
+            example:
+              identifier: user@example.com
+              captchaId: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
+              captchaCode: 7k2p
+      responses:
+        '204':
+          description: 恒返回 204（不泄露账号是否存在），无响应体
+        '400':
+          description: '图形验证码错误或已失效 / 邮箱格式非法'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 400
+                error: Bad Request
+                message: 验证码错误或已失效
+                path: /api/v1/auth/password/forgot
+                timestamp: '2026-11-09T03:04:10.212Z'
+  /auth/password/reset:
+    post:
+      tags: [认证]
+      summary: 重置密码
+      operationId: authResetPassword
+      description: |
+        🔓 公开。凭忘记密码邮件（/auth/password/forgot）中的一次性 token 设置新密码（v12.0）。
+
+        - token 一次性消费、30 分钟有效；新密码同注册复杂度规则（8~128 位、至少两类字符）。
+        - 成功后**全会话失效**（清空全部 refresh 并递增 sessionVersion，同 /auth/password 口径）。
+        - 失败：400「链接无效或已过期」（token 无效/过期/已消费，或账号已封禁）/ 新密码复杂度不足 / 两次输入的密码不一致。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+            example:
+              token: 4f8c2b6a1d3e5f7a9b0c2d4e6f8a0b1c
+              newPassword: Str0ngPass!23
+              newPasswordConfirm: Str0ngPass!23
+      responses:
+        '204':
+          description: 重置成功，无响应体；全部 refresh 作废并递增 sessionVersion
+        '400':
+          description: '链接无效或已过期 / 新密码复杂度不足「密码需包含大写字母、小写字母、数字、符号中的至少两类」/ 两次输入的密码不一致'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                链接失效:
+                  value:
+                    statusCode: 400
+                    error: Bad Request
+                    message: 链接无效或已过期
+                    path: /api/v1/auth/password/reset
+                    timestamp: '2026-11-09T03:04:10.212Z'
+                密码不一致:
+                  value:
+                    statusCode: 400
+                    error: Bad Request
+                    message: 两次输入的密码不一致
+                    path: /api/v1/auth/password/reset
+                    timestamp: '2026-11-09T03:04:10.212Z'
+  /auth/unsubscribe:
+    post:
+      tags: [认证]
+      summary: 一键退订通知邮件
+      operationId: authUnsubscribe
+      description: |
+        🔓 公开。凭通知邮件底部退订链接携带的 token 一键退订（v12.0），无需登录。
+
+        - token 为 HMAC 签名、180 天有效；成功后该账号 `emailNoticeEnabled` 置 false（等价 PUT /users/me/notification-prefs 关闭）。
+        - 失败：400「链接无效或已过期」（token 无效 / 过期 / 账号已删除统一此文案，防枚举）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UnsubscribeRequest'
+            example:
+              token: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e.1798000000000.a1b2c3d4e5f6
+      responses:
+        '204':
+          description: 已退订（emailNoticeEnabled 置 false），无响应体
+        '400':
+          description: '链接无效或已过期'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                statusCode: 400
+                error: Bad Request
+                message: 链接无效或已过期
+                path: /api/v1/auth/unsubscribe
+                timestamp: '2026-11-09T03:04:10.212Z'
   /users/me:
     patch:
       tags: [用户]
@@ -470,9 +649,10 @@ paths:
       description: |
         🔐 登录（仅本人；`ADMIN` 账号初始化后不可换绑，403）。
 
-        - 一个账号只绑定一个邮箱**或**一个手机号；换绑时清空另一种标识。
+        - 手机号为**可选附加绑定**（v12.0）：换绑/绑定不再清空另一标识，邮箱与手机号可并存（各自至多一个）。
+        - 换绑邮箱（type=email）须携带新邮箱的邮件验证码 `emailCode`（purpose=rebind，先经 /auth/email-code 拉取，一次性消费，校验通过即视为新邮箱已验证）；绑定手机号不需要。
         - 必须校验当前密码。换绑走 hmac 查找列做唯一性判定（v10.0 信封加密，接口明文）。
-        - 失败：400 当前密码错误/格式非法/验证码错误或已失效；409 已被其它账号绑定。
+        - 失败：400 当前密码错误/格式非法/图形或邮件验证码错误或已失效；409 已被其它账号绑定。
       requestBody:
         required: true
         content:
@@ -482,6 +662,7 @@ paths:
             example:
               type: email
               value: new@example.com
+              emailCode: '482913'
               password: Str0ngPass!23
               captchaId: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
               captchaCode: 7k2p
@@ -509,7 +690,7 @@ paths:
                 path: /api/v1/users/me/identifier
                 timestamp: '2026-11-09T03:04:10.212Z'
         '409':
-          description: '新邮箱/手机号已被其它账号绑定'
+          description: '新邮箱/手机号已被其它账号绑定（type=email 文案「该邮箱已被注册」；type=phone 文案「该手机号已被占用」）'
           content:
             application/json:
               schema:
@@ -517,7 +698,7 @@ paths:
               example:
                 statusCode: 409
                 error: Conflict
-                message: 该邮箱已被其它账号绑定
+                message: 该邮箱已被注册
                 path: /api/v1/users/me/identifier
                 timestamp: '2026-11-09T03:04:10.212Z'
   /users/me/username:
@@ -652,6 +833,54 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+  /users/me/notification-prefs:
+    get:
+      tags: [用户]
+      summary: 通知邮件偏好（读取）
+      operationId: usersGetNoticePref
+      description: |
+        🔐 登录（仅本人）。通知邮件总开关（v12.0），默认 `false`（关闭）。
+      responses:
+        '200':
+          description: 当前通知邮件偏好
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoticePref'
+              example:
+                emailNoticeEnabled: false
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags: [用户]
+      summary: 通知邮件偏好（设置）
+      operationId: usersUpdateNoticePref
+      description: |
+        🔐 登录（仅本人）。设置通知邮件总开关（v12.0）。
+
+        - 关闭后通知仅走站内；通知邮件底部的一键退订（/auth/unsubscribe）等价于置 false。
+        - 失败：400 `emailNoticeEnabled` 非布尔值。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateNoticePrefRequest'
+            example:
+              emailNoticeEnabled: true
+      responses:
+        '200':
+          description: 更新后的通知邮件偏好
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NoticePref'
+              example:
+                emailNoticeEnabled: true
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /users/{id}/ban:
     post:
       tags: [用户]
@@ -3313,7 +3542,7 @@ components:
               value:
                 statusCode: 409
                 error: Conflict
-                message: 邮箱已被注册
+                message: 该邮箱已被注册
                 path: /api/v1/auth/register
                 timestamp: '2026-11-09T03:04:10.212Z'
             状态冲突:
@@ -3325,7 +3554,7 @@ components:
                 path: /api/v1/admin/trash/ARTICLE/018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e/restore
                 timestamp: '2026-11-09T03:04:10.212Z'
     RateLimited:
-      description: '429 登录失败次数过多（同账号 + IP 15 分钟内失败 5 次，锁定 15 分钟）；或验证码获取超频（同 IP 每分钟 60 次）'
+      description: '429 触发限流：登录失败次数过多（同账号 + IP 15 分钟内失败 5 次，锁定 15 分钟）/ 注册尝试过频（同 IP 15 分钟 10 次）/ 邮件验证码拉取过频（同邮箱 1 分钟 1 封、1 小时 5 封）/ 图形验证码获取超频（同 IP 每分钟 60 次）'
       content:
         application/json:
           schema:
@@ -3480,6 +3709,14 @@ components:
         image:
           type: string
           description: data URI（可直接作 <img src>），图片不含文字答案元数据
+    NoticePref:
+      type: object
+      description: 通知邮件偏好（v12.0 总开关，默认 false）
+      required: [emailNoticeEnabled]
+      properties:
+        emailNoticeEnabled:
+          type: boolean
+          description: 通知邮件总开关；关闭后通知仅走站内
     ProfileStats:
       type: object
       description: 个人主页聚合计数（软删不计）
@@ -4454,12 +4691,17 @@ components:
                 $ref: '#/components/schemas/RequestLogItem'
     RegisterRequest:
       type: object
-      description: 注册请求（密码 8~128 位且四类字符至少两类；identifier 邮箱或手机号二选一）
-      required: [identifier, password, passwordConfirm, nickname, captchaId, captchaCode]
+      description: 注册请求（密码 8~128 位且四类字符至少两类；identifier 仅邮箱，须先经 /auth/email-code 拉取邮件验证码）
+      required: [identifier, emailCode, password, passwordConfirm, nickname, captchaId, captchaCode]
       properties:
         identifier:
           type: string
-          description: 邮箱或手机号，二选一
+          format: email
+          description: 仅邮箱（v12.0 起手机号改为可选附加绑定，注册仅邮箱）
+        emailCode:
+          type: string
+          maxLength: 16
+          description: 邮件验证码（发往 identifier 邮箱，purpose=register，见 POST /auth/email-code），一次性消费
         password:
           type: string
           format: password
@@ -4527,6 +4769,74 @@ components:
           type: string
         captchaCode:
           type: string
+    SendEmailCodeRequest:
+      type: object
+      description: 拉取邮件验证码请求（注册 / 换绑邮箱统一入口，图形验证码前置防轰炸）
+      required: [email, purpose, captchaId, captchaCode]
+      properties:
+        email:
+          type: string
+          format: email
+          description: 接收验证码的邮箱（purpose=register 为待注册邮箱，purpose=rebind 为新邮箱）
+        purpose:
+          type: string
+          enum: [register, rebind]
+          description: register 配合 /auth/register；rebind 配合 /users/me/identifier 换绑
+        captchaId:
+          type: string
+          description: 图形验证码 id（见 GET /auth/captcha）
+        captchaCode:
+          type: string
+          description: 图形验证码答案
+    ForgotPasswordRequest:
+      type: object
+      description: 忘记密码请求（无论账号是否存在均 204，防账号枚举）
+      required: [identifier, captchaId, captchaCode]
+      properties:
+        identifier:
+          type: string
+          format: email
+          description: 绑定的邮箱
+        captchaId:
+          type: string
+        captchaCode:
+          type: string
+    ResetPasswordRequest:
+      type: object
+      description: 重置密码请求（凭忘记密码邮件的一次性 token 设置新密码，成功后全会话失效）
+      required: [token, newPassword, newPasswordConfirm]
+      properties:
+        token:
+          type: string
+          maxLength: 128
+          description: 忘记密码邮件链接携带的一次性 token（30 分钟有效）
+        newPassword:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 128
+          description: 大写/小写/数字/符号四类中至少两类
+        newPasswordConfirm:
+          type: string
+          format: password
+          description: 确认密码，必填，须与 newPassword 一致
+    UnsubscribeRequest:
+      type: object
+      description: 一键退订通知邮件请求（token 化链接，无需登录）
+      required: [token]
+      properties:
+        token:
+          type: string
+          maxLength: 256
+          description: 通知邮件退订链接携带的 token（HMAC 签名，180 天有效）
+    UpdateNoticePrefRequest:
+      type: object
+      description: 设置通知邮件偏好（总开关）
+      required: [emailNoticeEnabled]
+      properties:
+        emailNoticeEnabled:
+          type: boolean
+          description: 通知邮件总开关
     UpdateMeRequest:
       type: object
       description: 修改本人资料请求（字段可选；昵称去空白后 ≤50）
@@ -4539,7 +4849,7 @@ components:
           maxLength: 1024
     ChangeIdentifierRequest:
       type: object
-      description: 换绑邮箱/手机号请求（一个账号只绑定一个邮箱或一个手机号，换绑清空另一种标识）
+      description: 换绑邮箱/手机号请求（手机号为可选附加绑定，不再清空另一标识，邮箱与手机号可并存、各自至多一个）
       required: [type, value, password, captchaId, captchaCode]
       properties:
         type:
@@ -4548,6 +4858,10 @@ components:
         value:
           type: string
           description: 新邮箱或手机号
+        emailCode:
+          type: string
+          maxLength: 16
+          description: 邮件验证码，仅 type=email 必填（发往 value 新邮箱，purpose=rebind，见 POST /auth/email-code），一次性消费
         password:
           type: string
           format: password

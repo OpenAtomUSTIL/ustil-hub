@@ -187,18 +187,20 @@ export class IssuesService {
       authorId: user.id,
       content: dto.content,
     });
-    // 通知楼主（自己回复自己不通知）
+    const users = await this.usersByIds([user.id]);
+    const author = users.get(user.id);
+    if (!author) {
+      throw new NotFoundException('用户不存在');
+    }
+    // 通知楼主（自己回复自己不通知）；邮件副本带回复人与内容摘要（v12.0）
     if (row.authorId !== user.id) {
       await this.notificationsService.notifyUser(row.authorId, {
         type: 'ISSUE_REPLY',
         title: row.title,
         link: `/issues/${row.slug}`,
+        actorNickname: author.nickname,
+        excerpt: dto.content.length > 200 ? `${dto.content.slice(0, 200)}…` : dto.content,
       });
-    }
-    const users = await this.usersByIds([user.id]);
-    const author = users.get(user.id);
-    if (!author) {
-      throw new NotFoundException('用户不存在');
     }
     return this.toReplyView(replyRow, author);
   }

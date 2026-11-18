@@ -1,4 +1,4 @@
-import { IsIn, IsNotEmpty, IsString, MaxLength } from 'class-validator';
+import { IsIn, IsNotEmpty, IsString, MaxLength, ValidateIf } from 'class-validator';
 import { CaptchaFields } from '../../../common/dto/captcha-fields';
 
 export class ChangeIdentifierDto extends CaptchaFields {
@@ -13,4 +13,11 @@ export class ChangeIdentifierDto extends CaptchaFields {
   @IsString({ message: 'password 必须是字符串' })
   @IsNotEmpty({ message: 'password 不能为空' })
   password!: string;
+
+  // v12.0：换绑邮箱必须携带新邮箱的邮件验证码（purpose=rebind）；绑手机号不需要
+  @ValidateIf((o: ChangeIdentifierDto) => o.type === 'email')
+  @IsString({ message: '验证码必须是字符串' })
+  @IsNotEmpty({ message: '验证码不能为空' })
+  @MaxLength(16, { message: '验证码过长' })
+  emailCode?: string;
 }

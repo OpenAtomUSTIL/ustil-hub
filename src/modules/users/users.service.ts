@@ -12,6 +12,7 @@ import { REFRESH_TOKEN_STORE, RefreshTokenStore } from '../../db/redis';
 import { UserStatus } from '../../db/schema';
 import { AuditLogService } from '../audit/audit-log.service';
 import { CaptchaService } from '../captcha/captcha.service';
+import { EmailCodeService } from '../mail/email-code.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UploadsService, UploadedFileInput } from '../storage/uploads.service';
 import { ChangeIdentifierDto } from './dto/change-identifier.dto';
@@ -52,6 +53,7 @@ export class UsersService {
     private readonly notificationsService: NotificationsService,
     private readonly auditLogService: AuditLogService,
     private readonly captchaService: CaptchaService,
+    private readonly emailCodeService: EmailCodeService,
     @Inject(REFRESH_TOKEN_STORE) private readonly refreshStore: RefreshTokenStore,
   ) {}
 
@@ -105,6 +107,12 @@ export class UsersService {
     const emailHmac = email ? this.crypto.hmac(email) : null;
     const phoneHmac = phone ? this.crypto.hmac(phone) : null;
     if (!emailHmac && !phoneHmac) return;
+    // 冲突文案随校验的标识类型收敛（v12.0 注册仅邮箱）
+    const conflictMessage = email && phone
+      ? '该邮箱或手机号已被占用'
+      : email
+        ? '该邮箱已被注册'
+        : '该手机号已被占用';
     const candidates = await this.usersRepository.findIdentifierCandidates(emailHmac, phoneHmac, connection);
     for (const row of candidates) {
       if (row.id === excludeId) continue;
@@ -114,14 +122,14 @@ export class UsersService {
         if (!value || !row[type]) continue;
         const storedHash = type === 'email' ? row.emailHmac : row.phoneHmac;
         if (storedHash) {
-          if (storedHash === hash) throw new ConflictException('该邮箱或手机号已被注册');
+          if (storedHash === hash) throw new ConflictException(conflictMessage);
           continue;
         }
         // 旧明文与缺失 HMAC 的有效信封均要检查，不能仅依赖可空唯一索引。
         const stored = this.crypto.open(type, row[type], row.cryptoId ?? '')
           ?? ((type === 'email' ? isEmail(row[type]!.trim()) : isMobilePhone(row[type]!.trim(), 'zh-CN')) ? row[type] : null);
         if (!stored) throw new ServiceUnavailableException('账号资料校验暂不可用，请稍后重试');
-        if (normalizeIdentifier(stored) === value) throw new ConflictException('该邮箱或手机号已被注册');
+        if (normalizeIdentifier(stored) === value) throw new ConflictException(conflictMessage);
       }
     }
   }
@@ -133,6 +141,7 @@ export class UsersService {
     nickname: string;
     role?: Role;
     inviteCodeId?: string | null;
+    emailVerifiedAt?: Date | null;
   }): Promise<UserSelf> {
     try {
       return await this.usersRepository.withUsernameLock(async (tx) => {
@@ -155,12 +164,13 @@ export class UsersService {
           username,
           ...(input.role ? { role: input.role } : {}),
           inviteCodeId: input.inviteCodeId ?? null,
+          emailVerifiedAt: input.emailVerifiedAt ?? null,
         }, tx);
         return this.toSelf(row);
       });
     } catch (error) {
       if (isUniqueViolation(error)) {
-        throw new ConflictException('该邮箱或手机号已被注册');
+        throw new ConflictException('该邮箱已被注册');
       }
       throw error;
     }
@@ -273,6 +283,8 @@ export class UsersService {
       if (!isEmail(value)) {
         throw new BadRequestException('邮箱格式错误');
       }
+      // v12.0：换绑邮箱必须先通过新邮箱的邮件验证码（purpose=rebind，一次性消费）
+      await this.emailCodeService.validate(value, 'rebind', dto.emailCode ?? '');
     } else if (!isMobilePhone(value, 'zh-CN')) {
       throw new BadRequestException('手机号格式错误');
     }
@@ -287,17 +299,26 @@ export class UsersService {
           if (current.role === Role.ADMIN) throw new ForbiddenException('管理员账号初始化后不可修改');
           if (current.passwordHash !== row.passwordHash) throw new BadRequestException('密码已变更，请重试');
           const cryptoId = current.cryptoId ?? this.crypto.newCryptoId();
+          // v12.0：手机号为可选附加绑定——只更新当前类型字段，不再清空另一标识
           return this.usersRepository.updateIdentifier(id, {
-            email: dto.type === 'email' ? this.crypto.seal('email', value, cryptoId) : null,
-            phone: dto.type === 'phone' ? this.crypto.seal('phone', value, cryptoId) : null,
-            emailHmac: dto.type === 'email' ? hmac : null,
-            phoneHmac: dto.type === 'phone' ? hmac : null,
+            ...(dto.type === 'email'
+              ? {
+                  email: this.crypto.seal('email', value, cryptoId),
+                  emailHmac: hmac,
+                  emailVerifiedAt: new Date(),
+                }
+              : {
+                  phone: this.crypto.seal('phone', value, cryptoId),
+                  phoneHmac: hmac,
+                }),
             ...(current.cryptoId ? {} : { cryptoId }),
           }, lockedTx);
         }, tx);
       });
     } catch (error) {
-      if (isUniqueViolation(error)) throw new ConflictException('该邮箱或手机号已被占用');
+      if (isUniqueViolation(error)) {
+        throw new ConflictException(dto.type === 'email' ? '该邮箱已被注册' : '该手机号已被占用');
+      }
       throw error;
     }
     if (!updated) {
@@ -313,6 +334,41 @@ export class UsersService {
 
   async updatePasswordHash(id: string, passwordHash: string): Promise<void> {
     await this.usersRepository.updatePasswordHash(id, passwordHash);
+  }
+
+  /** 通知邮件偏好（v12.0）：总开关，默认关 */
+  async getNoticePref(id: string): Promise<{ emailNoticeEnabled: boolean }> {
+    const row = await this.usersRepository.findById(id);
+    return { emailNoticeEnabled: row?.emailNoticeEnabled ?? false };
+  }
+
+  async updateNoticePref(id: string, enabled: boolean): Promise<{ emailNoticeEnabled: boolean }> {
+    const row = await this.usersRepository.updateNoticePref(id, enabled);
+    if (!row) {
+      throw new NotFoundException('用户不存在');
+    }
+    return { emailNoticeEnabled: row.emailNoticeEnabled };
+  }
+
+  /** 通知邮件收件人解析（v12.0）：仅 ACTIVE + 已验证邮箱 + 邮件提醒开启；邮箱在此解密，不出 users 模块 */
+  async getMailRecipients(
+    userIds: string[],
+  ): Promise<{ userId: string; email: string; nickname: string }[]> {
+    if (userIds.length === 0) {
+      return [];
+    }
+    const rows = await this.usersRepository.findByIds(userIds);
+    const result: { userId: string; email: string; nickname: string }[] = [];
+    for (const row of rows) {
+      if (row.status !== UserStatus.ACTIVE || !row.emailNoticeEnabled || !row.email || !row.emailVerifiedAt) {
+        continue;
+      }
+      const email = this.openField('email', row.email, row);
+      if (email) {
+        result.push({ userId: row.id, email, nickname: row.nickname });
+      }
+    }
+    return result;
   }
 
   async invalidateSessions(id: string, expectedVersion?: number): Promise<void> {

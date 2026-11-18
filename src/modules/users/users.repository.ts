@@ -110,6 +110,7 @@ export class UsersRepository {
     username: string;
     role?: UserRow['role'];
     inviteCodeId?: string | null;
+    emailVerifiedAt?: Date | null;
   }, connection: Database | DatabaseTransaction = db): Promise<UserRow> {
     const inserted = await connection.insert(users).values(row).returning();
     return inserted[0];
@@ -240,11 +241,13 @@ export class UsersRepository {
   async updateIdentifier(
     id: string,
     patch: {
-      email: string | null;
-      phone: string | null;
+      // v12.0：手机号改可选附加绑定——只更新传入的字段，未传字段保持不变
+      email?: string | null;
+      phone?: string | null;
       // 换绑（v10.0）：hmac 查找列与信封 token 同步更新/清空；cryptoId 仅在存量行缺失时补写
-      emailHmac: string | null;
-      phoneHmac: string | null;
+      emailHmac?: string | null;
+      phoneHmac?: string | null;
+      emailVerifiedAt?: Date | null;
       cryptoId?: string;
     },
     connection: Database | DatabaseTransaction = db,
@@ -252,6 +255,16 @@ export class UsersRepository {
     const rows = await connection
       .update(users)
       .set(patch)
+      .where(eq(users.id, id))
+      .returning();
+    return rows[0] ?? null;
+  }
+
+  /** 通知邮件偏好（v12.0） */
+  async updateNoticePref(id: string, emailNoticeEnabled: boolean): Promise<UserRow | null> {
+    const rows = await db
+      .update(users)
+      .set({ emailNoticeEnabled })
       .where(eq(users.id, id))
       .returning();
     return rows[0] ?? null;

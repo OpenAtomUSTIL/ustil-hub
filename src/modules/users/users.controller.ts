@@ -21,6 +21,7 @@ import { UploadedFileInput } from '../storage/uploads.service';
 import { renderBadgesSvg, statsToBadges, toShieldsSchema } from './users.badges';
 import { SnakeService } from './snake.service';
 import { ChangeIdentifierDto } from './dto/change-identifier.dto';
+import { UpdateNoticePrefDto } from './dto/update-notice-pref.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdateProfilePageDto } from './dto/update-profile-page.dto';
 import { UpdateUsernameDto } from './dto/update-username.dto';
@@ -50,6 +51,18 @@ export class UsersController {
   @Put('me/username')
   updateUsername(@CurrentUser() user: CurrentAuthUser, @Body() dto: UpdateUsernameDto) {
     return this.usersService.updateUsername(user.id, dto);
+  }
+
+  /** 通知邮件偏好（v12.0）：总开关读取 */
+  @Get('me/notification-prefs')
+  getNoticePref(@CurrentUser() user: CurrentAuthUser) {
+    return this.usersService.getNoticePref(user.id);
+  }
+
+  /** 通知邮件偏好（v12.0）：总开关设置 */
+  @Put('me/notification-prefs')
+  updateNoticePref(@CurrentUser() user: CurrentAuthUser, @Body() dto: UpdateNoticePrefDto) {
+    return this.usersService.updateNoticePref(user.id, dto.emailNoticeEnabled);
   }
 
   @Post('me/avatar')

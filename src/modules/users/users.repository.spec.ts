@@ -17,6 +17,7 @@ import {
 } from '../../db/schema';
 import { AuditLogService } from '../audit/audit-log.service';
 import { CaptchaService } from '../captcha/captcha.service';
+import { EmailCodeService } from '../mail/email-code.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UploadsService } from '../storage/uploads.service';
 import { UsersRepository, UserRow } from './users.repository';
@@ -74,6 +75,7 @@ describe('UsersService.resolveRowByIdentifier', () => {
       {} as unknown as NotificationsService,
       {} as unknown as AuditLogService,
       {} as unknown as CaptchaService,
+      { validate: async () => {} } as unknown as EmailCodeService,
       {} as unknown as RefreshTokenStore,
     );
   });

@@ -22,9 +22,7 @@ USTIL 官网/门户，本质是一个 **RBAC（基于角色的权限控制）系
 
 | 功能 | 状态 |
 |---|---|
-| 邮箱验证码注册验证 / 发信（Resend） | 🔴 后续 |
 | 私信、内容推送 | 🔴 后续 |
-| 邮件 / 站内异步队列（BullMQ 等） | 🔴 后续 |
 | 私信已读状态 | 🔴 后续 |
 | Backblaze B2 存储 | 🔴 后续 |
 | 积分 / 奖励点机制 | ❌ 不做（仅保留 issue 三状态） |
@@ -32,6 +30,8 @@ USTIL 官网/门户，本质是一个 **RBAC（基于角色的权限控制）系
 用户若要求实现以上任一项，先确认再动手。
 
 「关注成员」原属上表 🔴 后续，2026-11-13 经用户确认纳入 v4.0 范围（PLAN.md v4.0），不在上表之列。
+
+「邮箱验证码注册验证 / 发信」「邮件 / 站内异步队列（BullMQ 等）」原属上表 🔴 后续，2026-11-19 经用户确认纳入 v12.0 范围（PLAN.md v12.0，发信服务商定稿腾讯云邮件推送 SES），不在上表之列。
 
 「后台管理界面、邀请码注册、五角色等级体系（VISITOR/MEMBER/ALUMNI/WHEEL/ADMIN）」为当前迭代已确认范围，见 §3 / §10。
 
@@ -77,7 +77,16 @@ USTIL 官网/门户，本质是一个 **RBAC（基于角色的权限控制）系
 - 主键：`uuid`（v7），`MUST NOT` 用自增整数暴露给前端。
 - 数据库列：`snake_case`；JSON 字段：`camelCase`。由 Drizzle 映射层转换，`MUST NOT` 让前端迁就 `snake_case`。
 - 用户寻址（解析式，uuid 优先）：用户 `:id` 管理类路径参数（封禁/解封/改角色/提拔/剔除等）与查询过滤参数（`userId` / `actorId` / `authorId` / `creatorId` 等）支持 uuid / username（含历史 handle）/ email / phone（按 uuid → username → email → phone 顺序解析）；路径参数解析不到 → 404「用户不存在」，查询过滤参数解析不到 → 空列表。内容实体与用户资料页读接口维持「uuid 或 slug/username」不变。
-- 敏感操作验证码：注册 / 登录 / 改密 / 换绑 / 持码转正的请求体 `MUST` 额外携带 `captchaId` + `captchaCode`（取自 `GET /api/v1/auth/captcha`，一次性消费），校验失败统一 400「验证码错误或已失效」。
+- 敏感操作验证码：注册 / 登录 / 改密 / 换绑 / 持码转正 / 拉取邮件验证码 / 忘记密码的请求体 `MUST` 额外携带 `captchaId` + `captchaCode`（取自 `GET /api/v1/auth/captcha`，一次性消费），校验失败统一 400「验证码错误或已失效」。
+- 事务邮件（v12.0）新增端点：
+  - `POST /auth/email-code`（公开，204）：`{ email, purpose: 'register'|'rebind', captchaId, captchaCode }`，拉取邮件验证码（10 分钟有效、一次性；限频 1 分钟 1 封 / 1 小时 5 封 → 429）。
+  - `POST /auth/register`（公开）**变更**：`identifier` 仅邮箱（手机号注册退出）；新增必填 `emailCode`（注册强制邮箱验证）。
+  - `POST /auth/password/forgot`（公开，204）：`{ identifier(邮箱), captchaId, captchaCode }`，恒 204 不泄露账号是否存在。
+  - `POST /auth/password/reset`（公开，204）：`{ token, newPassword, newPasswordConfirm }`，一次性链接 token，成功后全会话失效；无效 400「链接无效或已过期」。
+  - `POST /auth/unsubscribe`（公开，204）：`{ token }`，一键退订通知邮件。
+  - `GET|PUT /users/me/notification-prefs`（登录）：`{ emailNoticeEnabled: boolean }`，通知邮件总开关（默认关）。
+  - `PUT /users/me/identifier`（登录）**变更**：`type='email'` 时 `emailCode` 必填（新邮箱验证码）；手机号改为**可选附加绑定**（不再清空邮箱）。
+- 邮件链接（重置 / 退订）形态：固定域名 `https://forum.openatomustil.cn/{{path}}`（腾讯云 SES 模板审核规范：域名固定、变量只承载路径段）。
 
 ### 4.6 语言
 - 用户可见文案：中文。
@@ -255,8 +264,9 @@ controller → service → repository(db)
 - 敏感操作图形验证码：注册 / 登录 / 改密 / 换绑 / 持码转正 `MUST` 校验 `captchaId` + `captchaCode`（自绘 PNG，图片不携带文字答案元数据，答案 sha256 存 Redis、TTL 5 分钟、一次性消费、单 captchaId 失败 3 次作废），校验失败统一 400「验证码错误或已失效」，与 IP 限流叠加而非替代。
 
 ### 11.4 账号绑定
-- 一个账号 `MUST` 只绑定**一个**邮箱或**一个**手机号（满足即可注册）。
-- 绑定新邮箱/手机号 `MUST` 校验当前密码。
+- **仅邮箱注册**（v12.0，拍板）：注册 `identifier` 必为邮箱且必须通过邮件验证码（强制验证，`email_verified_at` 落库）；手机号不再是注册途径，改为**可选附加绑定**（与邮箱并存）。
+- 绑定新邮箱/手机号 `MUST` 校验当前密码；换绑邮箱还 `MUST` 先通过新邮箱的邮件验证码（purpose=rebind）。
+- 存量仅手机号账号（如有）不强制补邮箱；通知邮件只发给已验证邮箱。
 
 ### 11.5 个人信息信封加密（v10.0）
 
@@ -309,13 +319,16 @@ interface StorageService {
 - `MUST NOT` 实现积分：答对不加分，只有状态流转。
 - 未解决 → 已解答时记录 `answeredBy` 与 `answeredAt`。
 
-## 15. Redis 职责（MVP 仅三项）
+## 15. Redis 职责
 
 1. 登录失败限流（§11.3）
 2. `refresh_token` 白名单 / 黑名单（§11.2）
 3. 图形验证码答案（sha256 哈希，不落明文——§16.1）：key `captcha:{captchaId}` / `captcha:attempts:{captchaId}`，TTL 5 分钟；图片获取按 `captcha_rate:{ip}` 限制每分钟 60 次，TTL 60 秒
+4. 邮件验证码（v12.0，sha256 不落明文）：key `email_code:{purpose}:{emailHmac}` / `email_code:attempts:{purpose}:{emailHmac}`，TTL 10 分钟；拉码限频 `email_code_rate_min:{emailHmac}`（1 分钟 1 封）/ `email_code_rate_hour:{emailHmac}`（1 小时 5 封）
+5. 重置密码一次性 token（sha256 不落明文）：key `reset_token:{sha256}`，值 userId，TTL 30 分钟，用后即焚
+6. 发信队列（BullMQ，v12.0 解禁）：`mail` 队列 + 专用连接（`maxRetriesPerRequest: null`）；任务体不落收件人/正文日志
 
-`MUST NOT` 在 MVP 引入 BullMQ 或其它队列。key 命名统一 `{业务}:{标识}:{id}`，全部设置 TTL。
+key 命名统一 `{业务}:{标识}:{id}`，状态类 key 全部设置 TTL。BullMQ 仅限发信场景，`MUST NOT` 把其它业务搬进队列（若需扩展另行拍板）。
 
 ## 16. 安全红线
 
@@ -370,6 +383,6 @@ pnpm db:migrate         # drizzle-kit migrate（部署 job / 本地手动）
 
 - 文章是否支持富文本 / Markdown 渲染（影响存储与 XSS 过滤）
 - 作业是否需要"评分"字段（当前只做提交，不做评分）
-- 邮件通知的发送时机与模板（后续阶段）
+- ~~邮件通知的发送时机与模板（后续阶段）~~ → **已拍板（2026-11-19）**：v12.0 引入事务邮件（腾讯云邮件推送 SES），模板定稿 `docs/mail-templates/`；通知邮件 = 站内通知的可选副本（默认关、用户自选、一键退订），节奏先即时（回复类带内容摘要），每日摘要后置；验证码/重置为强事务邮件。
 - ~~软删除 vs 硬删除策略（当前默认硬删除，封禁用 `status` 字段）~~ → **已拍板（2026-11-11）**：内容类（articles / announcements / resources / issue_replies）的业务 DELETE = 软删除（`deleted_at`），后台回收站可恢复（真回滚）；用户剔除仍为硬删 FK 级联；封禁继续用 `status` 字段。
 - 前端仓库最终位置（当前前端约定见 `web/AGENTS.md`，若改为 monorepo 需 `git mv`）

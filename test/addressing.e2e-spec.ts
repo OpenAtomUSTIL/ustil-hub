@@ -42,6 +42,7 @@ import { ResourcesService } from '../src/modules/resources/resources.service';
 import { JwtStrategy } from '../src/modules/auth/strategies/jwt.strategy';
 import { CaptchaController } from '../src/modules/captcha/captcha.controller';
 import { CaptchaService } from '../src/modules/captcha/captcha.service';
+import { EmailCodeService } from '../src/modules/mail/email-code.service';
 import { NotificationsService } from '../src/modules/notifications/notifications.service';
 import { TagsService } from '../src/modules/tags/tags.service';
 import { UploadsService } from '../src/modules/storage/uploads.service';
@@ -72,6 +73,19 @@ const testConfig: AppConfig = {
     },
   },
   uploadMaxSize: 10485760,
+  mail: {
+    driver: 'none',
+    from: '',
+    linkBase: 'https://forum.openatomustil.cn',
+    templateIds: {
+      'verify-code': 0,
+      'reset-password': 0,
+      'notice-reply': 0,
+      'notice-generic': 0,
+    },
+    api: { secretId: '', secretKey: '', region: 'ap-guangzhou' },
+    smtp: { host: '', port: 465, user: '', pass: '' },
+  },
 };
 
 /** 32 字节 base64 测试主密钥（仅测试进程使用；格式同 .env.example 的 APP_ENCRYPTION_KEY） */
@@ -208,6 +222,7 @@ describe('解析式寻址（v6.0 e2e）', () => {
         IssuesService,
         ResourcesService,
         { provide: UsersRepository, useValue: usersRepository },
+        { provide: EmailCodeService, useValue: { validate: jest.fn() } },
         { provide: CRYPTO_MASTER_KEY, useValue: TEST_ENCRYPTION_KEY },
         CryptoService,
         { provide: RequestLogsRepository, useValue: requestLogsRepository },

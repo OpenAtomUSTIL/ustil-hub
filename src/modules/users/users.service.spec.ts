@@ -13,6 +13,7 @@ import { REFRESH_TOKEN_STORE } from '../../db/redis';
 import { UserStatus } from '../../db/schema';
 import { AuditLogService } from '../audit/audit-log.service';
 import { CaptchaService } from '../captcha/captcha.service';
+import { EmailCodeService } from '../mail/email-code.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UploadsService } from '../storage/uploads.service';
 import { hashPassword } from '../auth/password';
@@ -81,6 +82,7 @@ describe('UsersService', () => {
     findByIds: jest.fn(),
     updateProfile: jest.fn(),
     updateIdentifier: jest.fn(),
+    updateNoticePref: jest.fn(),
     updatePasswordHash: jest.fn(),
     updateStatus: jest.fn(),
     listForAdmin: jest.fn(),
@@ -123,9 +125,15 @@ describe('UsersService', () => {
     validate: jest.fn(),
     create: jest.fn(),
   };
+  // v12.0：换绑邮箱需新邮箱邮件验证码（purpose=rebind，一次性消费）
+  const emailCodeService = {
+    validate: jest.fn(),
+    issue: jest.fn(),
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    emailCodeService.validate.mockResolvedValue(undefined);
     usersRepository.findIdentifierCandidates.mockReset().mockResolvedValue([]);
     usersRepository.insert.mockReset();
     usersRepository.withUsernameLock.mockImplementation((operation) => operation(transaction));
@@ -149,6 +157,7 @@ describe('UsersService', () => {
         { provide: NotificationsService, useValue: notificationsService },
         { provide: AuditLogService, useValue: auditLogService },
         { provide: CaptchaService, useValue: captchaService },
+        { provide: EmailCodeService, useValue: emailCodeService },
         { provide: REFRESH_TOKEN_STORE, useValue: refreshStore },
       ],
     }).compile();
@@ -293,7 +302,7 @@ describe('UsersService', () => {
     expect(usersRepository.updateIdentifier).not.toHaveBeenCalled();
   });
 
-  it('换绑邮箱：新值 seal + HMAC 更新，另一标识与其 HMAC 同步清空（v10.0）', async () => {
+  it('换绑邮箱：核销邮件验证码后 seal + HMAC 更新并记验证时间，不清空手机号（v12.0）', async () => {
     usersRepository.findById.mockResolvedValue(
       row({ passwordHash: await hashPassword('password123') }),
     );
@@ -306,18 +315,64 @@ describe('UsersService', () => {
       type: 'email',
       value: 'new@example.com',
       password: 'password123',
+      emailCode: '123456',
     });
 
+    // v12.0：换绑邮箱先按 purpose=rebind 一次性消费新邮箱的邮件验证码
+    expect(emailCodeService.validate).toHaveBeenCalledWith('new@example.com', 'rebind', '123456');
     expect(usersRepository.updateIdentifier).toHaveBeenCalledWith(
       '01890a5d-ac96-7000-8000-000000000001',
-      {
+      expect.objectContaining({
         email: 'v1.test.new@example.com',
-        phone: null,
         emailHmac: 'h:new@example.com',
-        phoneHmac: null,
-      },
+        emailVerifiedAt: expect.any(Date),
+      }),
       transaction,
     );
+    // v12.0 附加绑定：只更新当前类型字段，不触碰另一标识
+    const patch = usersRepository.updateIdentifier.mock.calls[0][1] as Record<string, unknown>;
+    expect(patch).not.toHaveProperty('phone');
+    expect(patch).not.toHaveProperty('phoneHmac');
+  });
+
+  it('换绑邮箱：邮件验证码校验失败 400 且不落库', async () => {
+    usersRepository.findById.mockResolvedValue(
+      row({ passwordHash: await hashPassword('password123') }),
+    );
+    emailCodeService.validate.mockRejectedValue(new BadRequestException('验证码错误或已失效'));
+
+    await expect(
+      service.changeIdentifier('01890a5d-ac96-7000-8000-000000000001', {
+        captchaId: 'captcha-1',
+        captchaCode: 'ABCDE',
+        type: 'email',
+        value: 'new@example.com',
+        password: 'password123',
+        emailCode: '000000',
+      }),
+    ).rejects.toThrow(BadRequestException);
+    expect(usersRepository.updateIdentifier).not.toHaveBeenCalled();
+  });
+
+  it('绑手机号：附加绑定只写 phone 字段，不清空邮箱、不验邮件码（v12.0）', async () => {
+    usersRepository.findById.mockResolvedValue(
+      row({ passwordHash: await hashPassword('password123') }),
+    );
+    usersRepository.updateIdentifier.mockResolvedValue(row({ phone: '13800138000' }));
+
+    await service.changeIdentifier('01890a5d-ac96-7000-8000-000000000001', {
+      captchaId: 'captcha-1',
+      captchaCode: 'ABCDE',
+      type: 'phone',
+      value: '13800138000',
+      password: 'password123',
+    });
+
+    expect(emailCodeService.validate).not.toHaveBeenCalled();
+    const patch = usersRepository.updateIdentifier.mock.calls[0][1] as Record<string, unknown>;
+    expect(patch).toMatchObject({ phone: 'v1.test.13800138000', phoneHmac: 'h:13800138000' });
+    expect(patch).not.toHaveProperty('email');
+    expect(patch).not.toHaveProperty('emailHmac');
   });
 
   it('封禁：状态置为 BANNED 并吊销全部 refresh', async () => {
@@ -871,6 +926,62 @@ describe('UsersService', () => {
     expect(refreshStore.revokeAll).toHaveBeenCalledTimes(1);
   });
 
+  // ===== 通知邮件偏好与收件人（v12.0） =====
+
+  it('通知偏好：按行返回开关，缺失用户默认关', async () => {
+    usersRepository.findById.mockResolvedValue(row({ emailNoticeEnabled: true }));
+    await expect(service.getNoticePref(targetId)).resolves.toEqual({ emailNoticeEnabled: true });
+
+    usersRepository.findById.mockResolvedValue(null);
+    await expect(service.getNoticePref(targetId)).resolves.toEqual({ emailNoticeEnabled: false });
+  });
+
+  it('通知偏好：更新成功返回开关，用户不存在 404', async () => {
+    usersRepository.updateNoticePref.mockResolvedValue(row({ emailNoticeEnabled: true }));
+    await expect(service.updateNoticePref(targetId, true)).resolves.toEqual({ emailNoticeEnabled: true });
+    expect(usersRepository.updateNoticePref).toHaveBeenCalledWith(targetId, true);
+
+    usersRepository.updateNoticePref.mockResolvedValue(null);
+    await expect(service.updateNoticePref(targetId, false)).rejects.toThrow(NotFoundException);
+  });
+
+  it('通知收件人：仅 ACTIVE + 已验证 + 开关开入选，邮箱解密后返回', async () => {
+    usersRepository.findByIds.mockResolvedValue([
+      row({ id: 'u-ok', email: 'v1.test.a@example.com', emailNoticeEnabled: true, emailVerifiedAt: now }),
+    ]);
+
+    const result = await service.getMailRecipients(['u-ok']);
+
+    expect(usersRepository.findByIds).toHaveBeenCalledWith(['u-ok']);
+    // 邮箱在 users 模块内解密（openField），输出明文
+    expect(result).toEqual([{ userId: 'u-ok', email: 'a@example.com', nickname: '测试用户' }]);
+  });
+
+  it('通知收件人：封禁 / 未验证 / 开关关 / 无邮箱均不入选', async () => {
+    usersRepository.findByIds.mockResolvedValue([
+      row({ id: 'u-banned', status: UserStatus.BANNED, emailNoticeEnabled: true, emailVerifiedAt: now }),
+      row({ id: 'u-unverified', emailNoticeEnabled: true, emailVerifiedAt: null }),
+      row({ id: 'u-off', emailNoticeEnabled: false, emailVerifiedAt: now }),
+      row({ id: 'u-noemail', email: null, emailNoticeEnabled: true, emailVerifiedAt: now }),
+      row({ id: 'u-ok', emailNoticeEnabled: true, emailVerifiedAt: now }),
+    ]);
+
+    const result = await service.getMailRecipients([
+      'u-banned',
+      'u-unverified',
+      'u-off',
+      'u-noemail',
+      'u-ok',
+    ]);
+
+    expect(result.map((r) => r.userId)).toEqual(['u-ok']);
+  });
+
+  it('通知收件人：空 id 列表直接返回空数组，不查库', async () => {
+    await expect(service.getMailRecipients([])).resolves.toEqual([]);
+    expect(usersRepository.findByIds).not.toHaveBeenCalled();
+  });
+
 });
 
 /** 信封加密（v10.0）：CryptoService 真实实现的往返、null 直通与拒绝语义 */
@@ -941,7 +1052,7 @@ describe('用户加密标识并发回归', () => {
       withUserLock: async (_id: string, fn: (row: UserRow, tx: typeof transaction) => Promise<unknown>) => fn({ ...live }, transaction),
       updateIdentifier: async (_id: string, patch: Partial<UserRow>) => Object.assign(live, patch),
     };
-    const service = new UsersService(repository as unknown as UsersRepository, crypto, {} as UploadsService, {} as NotificationsService, {} as AuditLogService, { validate: async () => {} } as unknown as CaptchaService, {} as never);
+    const service = new UsersService(repository as unknown as UsersRepository, crypto, {} as UploadsService, {} as NotificationsService, {} as AuditLogService, { validate: async () => {} } as unknown as CaptchaService, { validate: async () => {} } as unknown as EmailCodeService, {} as never);
     await service.changeIdentifier(live.id, { type: 'email', value: 'new@example.com', password: 'Password123', captchaId: 'c', captchaCode: 'c' });
     expect(live.cryptoId).toBe(id);
     expect(crypto.open('profile', live.bio, id)).toBe('saved bio');
@@ -963,7 +1074,7 @@ describe('用户加密标识并发回归', () => {
         return { ...live };
       },
     };
-    const service = new UsersService(repository as unknown as UsersRepository, crypto, {} as UploadsService, {} as NotificationsService, {} as AuditLogService, {} as CaptchaService, {} as never);
+    const service = new UsersService(repository as unknown as UsersRepository, crypto, {} as UploadsService, {} as NotificationsService, {} as AuditLogService, {} as CaptchaService, { validate: async () => {} } as unknown as EmailCodeService, {} as never);
     await Promise.all([service.updateProfilePage(live.id, { bio: 'bio' }), service.updateProfilePage(live.id, { company: 'company' })]);
     expect(crypto.open('profile', live.bio, live.cryptoId!)).toBe('bio');
     expect(crypto.open('profile', live.company, live.cryptoId!)).toBe('company');

@@ -40,6 +40,19 @@ const testConfig: AppConfig = {
     },
   },
   uploadMaxSize: 10485760,
+  mail: {
+    driver: 'none',
+    from: '',
+    linkBase: 'https://forum.openatomustil.cn',
+    templateIds: {
+      'verify-code': 0,
+      'reset-password': 0,
+      'notice-reply': 0,
+      'notice-generic': 0,
+    },
+    api: { secretId: '', secretKey: '', region: 'ap-guangzhou' },
+    smtp: { host: '', port: 465, user: '', pass: '' },
+  },
 };
 
 @Controller('probe')

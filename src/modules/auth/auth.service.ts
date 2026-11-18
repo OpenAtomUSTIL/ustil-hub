@@ -11,6 +11,7 @@ import { HttpStatus } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { v7 as uuidv7 } from 'uuid';
 import { Role } from '../../common/decorators/roles.decorator';
+import { CryptoService } from '../../common/crypto/crypto.service';
 import { AppConfig, configuration } from '../../config/configuration';
 import {
   REDIS_CLIENT,
@@ -22,6 +23,10 @@ import { UserStatus } from '../../db/schema';
 import { InviteCodesService } from '../admin/invite-codes.service';
 import { CaptchaService } from '../captcha/captcha.service';
 import { LoginLogsService } from '../audit/login-logs.service';
+import { EmailCodeService } from '../mail/email-code.service';
+import { ResetTokenStore, verifyUnsubscribeToken } from '../mail/link-tokens';
+import { RESET_TOKEN_STORE } from '../mail/mail.module';
+import { MailService } from '../mail/mail.service';
 import { UsersService, normalizeIdentifier } from '../users/users.service';
 import { AuthUser, UserPublic, UserSelf } from '../users/users.views';
 import {
@@ -30,9 +35,13 @@ import {
   REFRESH_TOKEN_TTL_SECONDS,
 } from './cookies';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { EmailCodeDto } from './dto/email-code.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { LoginDto } from './dto/login.dto';
 import { RedeemInviteCodeDto } from './dto/redeem-invite-code.dto';
 import { RegisterDto } from './dto/register.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
+import { UnsubscribeDto } from './dto/unsubscribe.dto';
 import { hashPassword, verifyPassword } from './password';
 
 const LOGIN_FAIL_TTL_SECONDS = 15 * 60;
@@ -51,9 +60,13 @@ export class AuthService {
     private readonly inviteCodesService: InviteCodesService,
     private readonly loginLogsService: LoginLogsService,
     private readonly captchaService: CaptchaService,
+    private readonly emailCodeService: EmailCodeService,
+    private readonly mailService: MailService,
+    private readonly crypto: CryptoService,
     private readonly jwtService: JwtService,
     @Inject(REDIS_CLIENT) private readonly redis: RedisClient,
     @Inject(REFRESH_TOKEN_STORE) private readonly refreshStore: RefreshTokenStore,
+    @Inject(RESET_TOKEN_STORE) private readonly resetTokens: ResetTokenStore,
     @Inject(configuration.KEY) private readonly cfg: AppConfig,
   ) {}
 
@@ -119,20 +132,22 @@ export class AuthService {
       throw new HttpException('注册尝试过于频繁，请稍后再试', HttpStatus.TOO_MANY_REQUESTS);
     }
     await this.captchaService.validate(dto.captchaId, dto.captchaCode);
+    // v12.0：仅邮箱注册 + 强制邮箱验证（邮件验证码，一次性消费）
     const identifier = normalizeIdentifier(dto.identifier);
-    const isEmailIdentifier = identifier.includes('@');
+    await this.emailCodeService.validate(identifier, 'register', dto.emailCode);
     const passwordHash = await hashPassword(dto.password);
     // 有码 → MEMBER 并核销；无码 → VISITOR（7 天清理对象）
     const invite = dto.inviteCode ? await this.inviteCodesService.consume(dto.inviteCode) : null;
     let user: UserSelf;
     try {
       user = await this.usersService.createUser({
-        email: isEmailIdentifier ? identifier : null,
-        phone: isEmailIdentifier ? null : identifier,
+        email: identifier,
+        phone: null,
         passwordHash,
         nickname: dto.nickname,
         role: invite ? Role.MEMBER : Role.VISITOR,
         inviteCodeId: invite ? invite.id : null,
+        emailVerifiedAt: new Date(),
       });
     } catch (error) {
       // 落库失败（如邮箱已注册）时回退核销计数
@@ -325,6 +340,59 @@ export class AuthService {
     const passwordHash = await hashPassword(dto.newPassword);
     await this.usersService.updatePasswordHash(userId, passwordHash);
     await this.refreshStore.revokeAll(userId);
+  }
+
+  /** 拉取邮件验证码（v12.0）：图形验证码前置 + 收件地址限频在 EmailCodeService 内 */
+  async sendEmailCode(dto: EmailCodeDto): Promise<void> {
+    await this.captchaService.validate(dto.captchaId, dto.captchaCode);
+    await this.emailCodeService.issue(normalizeIdentifier(dto.email), dto.purpose);
+  }
+
+  /** 忘记密码（v12.0）：无论账号是否存在均无返回差异（防账号枚举） */
+  async requestPasswordReset(dto: ForgotPasswordDto): Promise<void> {
+    await this.captchaService.validate(dto.captchaId, dto.captchaCode);
+    const email = normalizeIdentifier(dto.identifier);
+    const record = await this.usersService.findByIdentifier(email);
+    if (!record || record.status === UserStatus.BANNED) {
+      return;
+    }
+    const token = await this.resetTokens.issue(record.id);
+    await this.mailService.send(email, 'reset-password', {
+      resetPath: `reset-password?token=${token}`,
+      expiresMinutes: '30',
+    });
+  }
+
+  /** 重置密码（v12.0）：一次性链接 token，成功后全会话失效（同改密口径） */
+  async resetPassword(dto: ResetPasswordDto): Promise<void> {
+    const userId = await this.resetTokens.consume(dto.token);
+    if (!userId) {
+      throw new BadRequestException('链接无效或已过期');
+    }
+    const record = await this.usersService.getAuthRecordById(userId);
+    if (!record || record.status === UserStatus.BANNED) {
+      throw new BadRequestException('链接无效或已过期');
+    }
+    const passwordHash = await hashPassword(dto.newPassword);
+    await this.usersService.updatePasswordHash(userId, passwordHash);
+    await this.refreshStore.revokeAll(userId);
+  }
+
+  /** 一键退订通知邮件（v12.0）：token 化链接，无需登录 */
+  async unsubscribe(dto: UnsubscribeDto): Promise<void> {
+    const userId = verifyUnsubscribeToken(this.crypto, dto.token);
+    if (!userId) {
+      throw new BadRequestException('链接无效或已过期');
+    }
+    try {
+      await this.usersService.updateNoticePref(userId, false);
+    } catch (error) {
+      // 账号已删除（如被剔除学员）归一为 400，与重置密码的防枚举口径一致，不暴露账号状态
+      if (error instanceof NotFoundException) {
+        throw new BadRequestException('链接无效或已过期');
+      }
+      throw error;
+    }
   }
 
   async getMe(userId: string): Promise<UserSelf> {

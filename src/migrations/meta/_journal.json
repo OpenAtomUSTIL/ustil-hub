@@ -134,6 +134,13 @@
       "when": 1794825846620,
       "tag": "0018_add_user_pii_envelope",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1795027279410,
+      "tag": "0019_add_user_email_verify_and_notice_pref",
+      "breakpoints": true
     }
   ]
 }

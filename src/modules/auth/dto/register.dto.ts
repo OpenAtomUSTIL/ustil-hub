@@ -1,13 +1,19 @@
 import { Transform } from 'class-transformer';
-import { IsNotEmpty, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
+import { IsEmail, IsNotEmpty, IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { CaptchaFields } from '../../../common/dto/captcha-fields';
-import { IsEmailOrPhone } from './is-email-or-phone';
 import { IsPasswordComplex } from './is-password-complex';
 import { IsSameAs } from './is-same-as';
 
 export class RegisterDto extends CaptchaFields {
-  @IsEmailOrPhone({ message: '请输入合法的邮箱或手机号' })
+  // v12.0：仅允许邮箱注册（手机号改为可选绑定），identifier 语义收窄为邮箱
+  @IsEmail({}, { message: '请输入合法的邮箱' })
   identifier!: string;
+
+  // 邮件验证码（发往 identifier 邮箱，purpose=register，一次性消费）
+  @IsString({ message: '验证码必须是字符串' })
+  @IsNotEmpty({ message: '验证码不能为空' })
+  @MaxLength(16, { message: '验证码过长' })
+  emailCode!: string;
 
   @IsString({ message: '密码必须是字符串' })
   @MinLength(8, { message: '密码长度不能少于 8 位' })

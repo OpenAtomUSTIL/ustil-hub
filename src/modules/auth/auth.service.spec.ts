@@ -1,13 +1,18 @@
-import { ConflictException, ForbiddenException, HttpException, HttpStatus, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, HttpException, HttpStatus, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 import { AppConfig, configuration } from '../../config/configuration';
 import { Role } from '../../common/decorators/roles.decorator';
+import { CryptoService } from '../../common/crypto/crypto.service';
 import { REDIS_CLIENT, REFRESH_TOKEN_STORE } from '../../db/redis';
 import { UserStatus } from '../../db/schema';
 import { InviteCodesService } from '../admin/invite-codes.service';
 import { LoginLogsService } from '../audit/login-logs.service';
 import { CaptchaService } from '../captcha/captcha.service';
+import { EmailCodeService } from '../mail/email-code.service';
+import { signUnsubscribeToken } from '../mail/link-tokens';
+import { RESET_TOKEN_STORE } from '../mail/mail.module';
+import { MailService } from '../mail/mail.service';
 import { UsersService } from '../users/users.service';
 import { UserSelf } from '../users/users.views';
 import { AuthService } from './auth.service';
@@ -34,6 +39,19 @@ const testConfig: AppConfig = {
     },
   },
   uploadMaxSize: 10485760,
+  mail: {
+    driver: 'none',
+    from: '',
+    linkBase: 'https://forum.openatomustil.cn',
+    templateIds: {
+      'verify-code': 0,
+      'reset-password': 0,
+      'notice-reply': 0,
+      'notice-generic': 0,
+    },
+    api: { secretId: '', secretKey: '', region: 'ap-guangzhou' },
+    smtp: { host: '', port: 465, user: '', pass: '' },
+  },
 };
 
 const selfFixture: UserSelf = {
@@ -65,6 +83,7 @@ describe('AuthService', () => {
     getAuthUser: jest.fn(),
     applyInviteCode: jest.fn(),
     invalidateSessions: jest.fn(),
+    updateNoticePref: jest.fn(),
   };
   const inviteCodesService = {
     consume: jest.fn(),
@@ -94,9 +113,29 @@ describe('AuthService', () => {
     validate: jest.fn(),
     create: jest.fn(),
   };
+  // v12.0 事务邮件：验证码 / 发信 / 一次性重置 token / CryptoService（退订 token HMAC）
+  const emailCodeService = {
+    validate: jest.fn(),
+    issue: jest.fn(),
+  };
+  const mailService = {
+    send: jest.fn(),
+    driver: 'none',
+  };
+  const cryptoStub = {
+    hmac: (plaintext: string): string => 'h:' + plaintext,
+    hmacEquals: (a: string, b: string): boolean => a === b,
+  };
+  const resetTokens = {
+    issue: jest.fn(),
+    consume: jest.fn(),
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    // clearAllMocks 不清实现，逐个复位避免用例间互相污染
+    captchaService.validate.mockReset();
+    emailCodeService.validate.mockReset();
     const moduleRef = await Test.createTestingModule({
       providers: [
         AuthService,
@@ -107,6 +146,10 @@ describe('AuthService', () => {
         { provide: JwtService, useValue: new JwtService({ secret: 'unit-test-secret' }) },
         { provide: REDIS_CLIENT, useValue: redis },
         { provide: REFRESH_TOKEN_STORE, useValue: refreshStore },
+        { provide: RESET_TOKEN_STORE, useValue: resetTokens },
+        { provide: EmailCodeService, useValue: emailCodeService },
+        { provide: MailService, useValue: mailService },
+        { provide: CryptoService, useValue: cryptoStub },
         { provide: configuration.KEY, useValue: testConfig },
       ],
     }).compile();
@@ -115,19 +158,26 @@ describe('AuthService', () => {
     usersService.getAuthUser.mockResolvedValue({ id: selfFixture.id, role: Role.MEMBER, status: UserStatus.ACTIVE, sessionVersion: 0 });
   });
 
-  it('注册成功：邮箱标识落库并签发双 token', async () => {
+  it('注册成功：仅邮箱注册，邮件验证码核销后落库（emailVerifiedAt）并签发双 token', async () => {
     usersService.createUser.mockResolvedValue(selfFixture);
 
     const result = await service.register({
       ...captchaFields,
       identifier: 'A@Example.com',
+      emailCode: '123456',
       password: 'password123',
       passwordConfirm: 'password123',
       nickname: '测试用户',
     });
 
+    // v12.0：identifier 归一化后按 purpose=register 一次性消费邮件验证码
+    expect(emailCodeService.validate).toHaveBeenCalledWith('a@example.com', 'register', '123456');
     expect(usersService.createUser).toHaveBeenCalledWith(
-      expect.objectContaining({ email: 'a@example.com', phone: null }),
+      expect.objectContaining({
+        email: 'a@example.com',
+        phone: null,
+        emailVerifiedAt: expect.any(Date),
+      }),
     );
     expect(result.user.id).toBe(selfFixture.id);
     expect(result.tokens.accessToken).toBeTruthy();
@@ -139,12 +189,30 @@ describe('AuthService', () => {
     );
   });
 
+  it('注册：邮件验证码校验失败 400 且不落库', async () => {
+    emailCodeService.validate.mockRejectedValue(new BadRequestException('验证码错误或已失效'));
+
+    await expect(
+      service.register({
+        ...captchaFields,
+        identifier: 'a@example.com',
+        emailCode: '000000',
+        password: 'password123',
+        passwordConfirm: 'password123',
+        nickname: '测试用户',
+      }),
+    ).rejects.toThrow(BadRequestException);
+    expect(usersService.createUser).not.toHaveBeenCalled();
+    expect(inviteCodesService.consume).not.toHaveBeenCalled();
+  });
+
   it('无码注册：创建 VISITOR 账号', async () => {
     usersService.createUser.mockResolvedValue({ ...selfFixture, role: Role.VISITOR });
 
     await service.register({
       ...captchaFields,
       identifier: 'a@example.com',
+      emailCode: '123456',
       password: 'password123',
       passwordConfirm: 'password123',
       nickname: '测试用户',
@@ -163,6 +231,7 @@ describe('AuthService', () => {
     await service.register({
       ...captchaFields,
       identifier: 'a@example.com',
+      emailCode: '123456',
       password: 'password123',
       passwordConfirm: 'password123',
       nickname: '测试用户',
@@ -183,6 +252,7 @@ describe('AuthService', () => {
       service.register({
         ...captchaFields,
         identifier: 'a@example.com',
+        emailCode: '123456',
         password: 'password123',
         passwordConfirm: 'password123',
         nickname: '测试用户',
@@ -194,12 +264,13 @@ describe('AuthService', () => {
 
   it('注册落库失败：回退核销计数', async () => {
     inviteCodesService.consume.mockResolvedValue({ id: 'invite-1' });
-    usersService.createUser.mockRejectedValue(new ConflictException('该邮箱或手机号已被注册'));
+    usersService.createUser.mockRejectedValue(new ConflictException('该邮箱已被注册'));
 
     await expect(
       service.register({
         ...captchaFields,
         identifier: 'a@example.com',
+        emailCode: '123456',
         password: 'password123',
         passwordConfirm: 'password123',
         nickname: '测试用户',
@@ -458,5 +529,109 @@ describe('AuthService', () => {
     expect(loginLogsService.record).toHaveBeenCalledWith(
       expect.objectContaining({ userId: selfFixture.id, email: 'a@example.com', success: true }),
     );
+  });
+
+  // ===== 事务邮件（v12.0）=====
+
+  it('拉取邮件验证码：图形验证码通过后调用 issue（邮箱归一化）', async () => {
+    await service.sendEmailCode({ email: 'A@Example.com', purpose: 'register', ...captchaFields });
+
+    expect(emailCodeService.issue).toHaveBeenCalledWith('a@example.com', 'register');
+  });
+
+  it('拉取邮件验证码：图形验证码失败不发码', async () => {
+    captchaService.validate.mockRejectedValue(new BadRequestException('验证码错误或已失效'));
+
+    await expect(
+      service.sendEmailCode({ email: 'a@example.com', purpose: 'register', ...captchaFields }),
+    ).rejects.toThrow(BadRequestException);
+    expect(emailCodeService.issue).not.toHaveBeenCalled();
+  });
+
+  it('忘记密码：账号存在则签发一次性 token 并发 reset-password 邮件', async () => {
+    usersService.findByIdentifier.mockResolvedValue({
+      id: selfFixture.id,
+      status: UserStatus.ACTIVE,
+    });
+    resetTokens.issue.mockResolvedValue('reset-token-1');
+
+    await service.requestPasswordReset({ identifier: 'A@Example.com', ...captchaFields });
+
+    expect(resetTokens.issue).toHaveBeenCalledWith(selfFixture.id);
+    expect(mailService.send).toHaveBeenCalledWith('a@example.com', 'reset-password', {
+      resetPath: 'reset-password?token=reset-token-1',
+      expiresMinutes: '30',
+    });
+  });
+
+  it('忘记密码：账号不存在静默返回（防账号枚举）', async () => {
+    usersService.findByIdentifier.mockResolvedValue(null);
+
+    await expect(
+      service.requestPasswordReset({ identifier: 'nobody@example.com', ...captchaFields }),
+    ).resolves.toBeUndefined();
+    expect(resetTokens.issue).not.toHaveBeenCalled();
+    expect(mailService.send).not.toHaveBeenCalled();
+  });
+
+  it('忘记密码：封禁账号静默不发信', async () => {
+    usersService.findByIdentifier.mockResolvedValue({
+      id: selfFixture.id,
+      status: UserStatus.BANNED,
+    });
+
+    await expect(
+      service.requestPasswordReset({ identifier: 'a@example.com', ...captchaFields }),
+    ).resolves.toBeUndefined();
+    expect(resetTokens.issue).not.toHaveBeenCalled();
+    expect(mailService.send).not.toHaveBeenCalled();
+  });
+
+  it('重置密码：消费一次性 token 更新密码并吊销全部会话', async () => {
+    resetTokens.consume.mockResolvedValue(selfFixture.id);
+    usersService.getAuthRecordById.mockResolvedValue({
+      id: selfFixture.id,
+      status: UserStatus.ACTIVE,
+      passwordHash: await hashPassword('password123'),
+    });
+
+    await service.resetPassword({
+      token: 'reset-token-1',
+      newPassword: 'newPassword123',
+      newPasswordConfirm: 'newPassword123',
+    });
+
+    expect(resetTokens.consume).toHaveBeenCalledWith('reset-token-1');
+    expect(usersService.updatePasswordHash).toHaveBeenCalledWith(selfFixture.id, expect.any(String));
+    expect(refreshStore.revokeAll).toHaveBeenCalledWith(selfFixture.id);
+  });
+
+  it('重置密码：无效 token 400 且不改密码', async () => {
+    resetTokens.consume.mockResolvedValue(null);
+
+    await expect(
+      service.resetPassword({
+        token: 'bad-token',
+        newPassword: 'newPassword123',
+        newPasswordConfirm: 'newPassword123',
+      }),
+    ).rejects.toThrow(BadRequestException);
+    expect(usersService.updatePasswordHash).not.toHaveBeenCalled();
+    expect(refreshStore.revokeAll).not.toHaveBeenCalled();
+  });
+
+  it('一键退订：有效 token 关闭邮件通知', async () => {
+    const token = signUnsubscribeToken(cryptoStub as unknown as CryptoService, selfFixture.id);
+
+    await service.unsubscribe({ token });
+
+    expect(usersService.updateNoticePref).toHaveBeenCalledWith(selfFixture.id, false);
+  });
+
+  it('一键退订：无效 token 400 且不改偏好', async () => {
+    await expect(service.unsubscribe({ token: 'bad.token.here' })).rejects.toThrow(
+      BadRequestException,
+    );
+    expect(usersService.updateNoticePref).not.toHaveBeenCalled();
   });
 });
