@@ -174,9 +174,9 @@ TagView = { id: string; name: string; count: number }
 ### 1.6 修改密码 `POST /api/v1/auth/password`
 
 - 权限：🔐 登录
-- 请求体：`{ "currentPassword": "当前密码", "newPassword": "新密码（8~128 位，大写/小写/数字/符号中至少两类）", "captchaId": "图形验证码 id（见 1.8）", "captchaCode": "图形验证码答案" }`
+- 请求体：`{ "currentPassword": "当前密码", "newPassword": "新密码（8~128 位，大写/小写/数字/符号中至少两类）", "emailCode": "邮件验证码，必填；发往当前绑定邮箱，purpose=password（先经 1.10 拉取）", "captchaId": "图形验证码 id（见 1.8）", "captchaCode": "图形验证码答案" }`
 - 成功：`204`；清除该用户全部 refresh 并递增 `sessionVersion`（其它端需重新登录）
-- 失败：`400` 当前密码错误 / 新密码复杂度不足 / 验证码错误或已失效
+- 失败：`400` 当前密码错误 / 新密码复杂度不足 / 图形或邮件验证码错误或已失效 / 该账号未绑定邮箱「请先绑定邮箱后再修改密码」；`429` 邮件验证码拉取超频（见 1.10）
 
 ### 1.7 获取当前用户 `GET /api/v1/auth/me`
 
@@ -216,12 +216,12 @@ TagView = { id: string; name: string; count: number }
   ```json
   {
     "email": "接收验证码的邮箱",
-    "purpose": "register | rebind",
+    "purpose": "register | rebind | password",
     "captchaId": "图形验证码 id（见 1.8）",
     "captchaCode": "图形验证码答案"
   }
   ```
-- 说明：注册（purpose=register，发往待注册邮箱）与换绑邮箱（purpose=rebind，发往新邮箱）统一入口；图形验证码前置防轰炸。6 位数字验证码，10 分钟有效，**只发邮件不返回响应体**；一次性消费，输错 3 次作废（与图形验证码同口径）
+- 说明：注册（purpose=register，发往待注册邮箱）与换绑邮箱（purpose=rebind，发往新邮箱）、修改密码（purpose=password，发往当前绑定邮箱）统一入口；图形验证码前置防轰炸。6 位数字验证码，10 分钟有效，**只发邮件不返回响应体**；一次性消费，输错 3 次作废（与图形验证码同口径）
 - 成功：`204`，表示验证码邮件已入队，最终投递由邮件服务异步完成；拉码与注册/换绑提交须使用不同的图形验证码。
 - 失败：`400` 验证码错误或已失效（图形验证码）/ 邮箱格式非法 / purpose 非法；`429` 同一邮箱 1 分钟 1 封 / 1 小时 5 封，超限「邮件发送过于频繁，请稍后再试」；`503` 邮件未启用或入队失败「验证码邮件暂时无法发送，请稍后重试」
 

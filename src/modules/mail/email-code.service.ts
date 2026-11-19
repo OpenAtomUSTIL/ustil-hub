@@ -9,7 +9,7 @@ import { CryptoService } from '../../common/crypto/crypto.service';
 import { REDIS_CLIENT, RedisClient } from '../../db/redis';
 import { MailService } from './mail.service';
 
-export type EmailCodePurpose = 'register' | 'rebind';
+export type EmailCodePurpose = 'register' | 'rebind' | 'password';
 
 const CODE_TTL_SECONDS = 10 * 60;
 const MAX_ATTEMPTS = 3;
@@ -23,6 +23,7 @@ const CODE_ERROR = '验证码错误或已失效';
 const PURPOSE_TEXT: Record<EmailCodePurpose, string> = {
   register: '注册账号',
   rebind: '更换绑定邮箱',
+  password: '修改密码',
 };
 
 @Injectable()

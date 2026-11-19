@@ -79,8 +79,9 @@ USTIL 官网/门户，本质是一个 **RBAC（基于角色的权限控制）系
 - 用户寻址（解析式，uuid 优先）：用户 `:id` 管理类路径参数（封禁/解封/改角色/提拔/剔除等）与查询过滤参数（`userId` / `actorId` / `authorId` / `creatorId` 等）支持 uuid / username（含历史 handle）/ email / phone（按 uuid → username → email → phone 顺序解析）；路径参数解析不到 → 404「用户不存在」，查询过滤参数解析不到 → 空列表。内容实体与用户资料页读接口维持「uuid 或 slug/username」不变。
 - 敏感操作验证码：注册 / 登录 / 改密 / 换绑 / 持码转正 / 拉取邮件验证码 / 忘记密码的请求体 `MUST` 额外携带 `captchaId` + `captchaCode`（取自 `GET /api/v1/auth/captcha`，一次性消费），校验失败统一 400「验证码错误或已失效」。
 - 事务邮件（v12.0）新增端点：
-  - `POST /auth/email-code`（公开，204）：`{ email, purpose: 'register'|'rebind', captchaId, captchaCode }`，拉取邮件验证码（10 分钟有效、一次性；限频 1 分钟 1 封 / 1 小时 5 封 → 429）。
+  - `POST /auth/email-code`（公开，204）：`{ email, purpose: 'register'|'rebind'|'password', captchaId, captchaCode }`，拉取邮件验证码（10 分钟有效、一次性；限频 1 分钟 1 封 / 1 小时 5 封 → 429）。
   - `POST /auth/register`（公开）**变更**：`identifier` 仅邮箱（手机号注册退出）；新增必填 `emailCode`（注册强制邮箱验证）。
+  - `POST /auth/password`（登录，204）**变更**：新增必填 `emailCode`（purpose=password，发往当前绑定邮箱）；未绑定邮箱 400「该账号未绑定邮箱，请先绑定邮箱后再修改密码」。
   - `POST /auth/password/forgot`（公开，204）：`{ identifier(邮箱), captchaId, captchaCode }`，恒 204 不泄露账号是否存在。
   - `POST /auth/password/reset`（公开，204）：`{ token, newPassword, newPasswordConfirm }`，一次性链接 token，成功后全会话失效；无效 400「链接无效或已过期」。
   - `POST /auth/unsubscribe`（公开，204）：`{ token }`，一键退订通知邮件。

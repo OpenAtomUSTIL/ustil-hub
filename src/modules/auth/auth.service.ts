@@ -339,7 +339,15 @@ export class AuthService {
     if (!ok) {
       throw new BadRequestException('当前密码错误');
     }
+    // v12.0：修改密码需当前绑定邮箱的邮件验证码（purpose=password）
+    const self = await this.usersService.getSelf(userId);
+    if (!self.email) {
+      throw new BadRequestException('该账号未绑定邮箱，请先绑定邮箱后再修改密码');
+    }
+    await this.emailCodeService.check(self.email, 'password', dto.emailCode);
     const passwordHash = await hashPassword(dto.newPassword);
+    // 写入前原子消费邮件码；此前的失败（如密码错误）不消耗验证码
+    await this.emailCodeService.validate(self.email, 'password', dto.emailCode);
     await this.usersService.updatePasswordHash(userId, passwordHash);
     await this.refreshStore.revokeAll(userId);
   }

@@ -348,8 +348,9 @@ paths:
         🔐 登录。修改本人密码。
 
         - 新密码同注册复杂度规则（8~128 位、至少两类字符）。
+        - 需当前绑定邮箱的邮件验证码（emailCode，purpose=password，先经 /auth/email-code 拉取）；未绑定邮箱 400「该账号未绑定邮箱，请先绑定邮箱后再修改密码」。
         - 成功后清除该用户全部 refresh 并递增 sessionVersion（其它端需重新登录）。
-        - 失败：400 当前密码错误 / 新密码复杂度不足 / 验证码错误或已失效。
+        - 失败：400 当前密码错误 / 新密码复杂度不足 / 图形或邮件验证码错误或已失效。
       requestBody:
         required: true
         content:
@@ -359,13 +360,14 @@ paths:
             example:
               currentPassword: OldPassw0rd!
               newPassword: Str0ngPass!23
+              emailCode: '834291'
               captchaId: 018f0d5e-6c1f-7c2a-9b3e-2f4d6a8b0c1e
               captchaCode: 7k2p
       responses:
         '204':
           description: 修改成功，无响应体；全部 refresh 作废并递增 sessionVersion
         '400':
-          description: '当前密码错误 / 新密码复杂度不足「密码需包含大写字母、小写字母、数字、符号中的至少两类」/ 验证码错误或已失效'
+          description: '当前密码错误 / 新密码复杂度不足「密码需包含大写字母、小写字母、数字、符号中的至少两类」/ 图形或邮件验证码错误或已失效 / 该账号未绑定邮箱'
           content:
             application/json:
               schema:
@@ -4760,8 +4762,8 @@ components:
           type: string
     ChangePasswordRequest:
       type: object
-      description: 修改密码请求（newPassword 同注册复杂度规则）
-      required: [currentPassword, newPassword, captchaId, captchaCode]
+      description: 修改密码请求（newPassword 同注册复杂度规则；emailCode 为当前绑定邮箱的邮件验证码，purpose=password）
+      required: [currentPassword, newPassword, emailCode, captchaId, captchaCode]
       properties:
         currentPassword:
           type: string
@@ -4771,6 +4773,10 @@ components:
           format: password
           minLength: 8
           maxLength: 128
+        emailCode:
+          type: string
+          description: 邮件验证码（purpose=password，发往当前绑定邮箱）
+          maxLength: 16
         captchaId:
           type: string
         captchaCode:

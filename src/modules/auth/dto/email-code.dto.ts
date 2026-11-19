@@ -6,6 +6,6 @@ export class EmailCodeDto extends CaptchaFields {
   @IsEmail({}, { message: '请输入合法的邮箱' })
   email!: string;
 
-  @IsIn(['register', 'rebind'], { message: 'purpose 仅支持 register / rebind' })
-  purpose!: 'register' | 'rebind';
+  @IsIn(['register', 'rebind', 'password'], { message: 'purpose 仅支持 register / rebind / password' })
+  purpose!: 'register' | 'rebind' | 'password';
 }

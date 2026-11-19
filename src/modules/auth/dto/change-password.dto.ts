@@ -1,4 +1,4 @@
-import { IsString, MaxLength, MinLength } from 'class-validator';
+import { IsNotEmpty, IsString, MaxLength, MinLength } from 'class-validator';
 import { CaptchaFields } from '../../../common/dto/captcha-fields';
 import { IsPasswordComplex } from './is-password-complex';
 
@@ -14,4 +14,10 @@ export class ChangePasswordDto extends CaptchaFields {
   @MaxLength(128, { message: '密码长度不能超过 128 位' })
   @IsPasswordComplex()
   newPassword!: string;
+
+  // v12.0：修改密码需当前绑定邮箱的邮件验证码（purpose=password）
+  @IsString({ message: '验证码必须是字符串' })
+  @IsNotEmpty({ message: '验证码不能为空' })
+  @MaxLength(16, { message: '验证码过长' })
+  emailCode!: string;
 }

@@ -428,8 +428,95 @@ describe('AuthService', () => {
         ...captchaFields,
         currentPassword: 'wrong-password',
         newPassword: 'newpassword123',
+        emailCode: '123456',
       }),
     ).rejects.toThrow(HttpException);
+    // 密码错误发生在邮件码校验之前，不消耗验证码
+    expect(emailCodeService.check).not.toHaveBeenCalled();
+    expect(emailCodeService.validate).not.toHaveBeenCalled();
+  });
+
+  it('改密码：需当前绑定邮箱的邮件验证码（purpose=password）并全会话失效', async () => {
+    usersService.getAuthRecordById.mockResolvedValue({
+      id: selfFixture.id,
+      email: 'a@example.com',
+      phone: null,
+      passwordHash: await hashPassword('password123'),
+      nickname: '测试用户',
+      avatarUrl: null,
+      role: Role.MEMBER,
+      status: UserStatus.ACTIVE,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    usersService.getSelf.mockResolvedValue(selfFixture);
+
+    await service.changePassword(selfFixture.id, {
+      ...captchaFields,
+      currentPassword: 'password123',
+      newPassword: 'newpassword123',
+      emailCode: '123456',
+    });
+
+    expect(emailCodeService.check).toHaveBeenCalledWith('a@example.com', 'password', '123456');
+    expect(emailCodeService.validate).toHaveBeenCalledWith('a@example.com', 'password', '123456');
+    expect(usersService.updatePasswordHash).toHaveBeenCalledWith(selfFixture.id, expect.any(String));
+    expect(refreshStore.revokeAll).toHaveBeenCalledWith(selfFixture.id);
+  });
+
+  it('改密码：邮件验证码错误返回 400 且不落库', async () => {
+    usersService.getAuthRecordById.mockResolvedValue({
+      id: selfFixture.id,
+      email: 'a@example.com',
+      phone: null,
+      passwordHash: await hashPassword('password123'),
+      nickname: '测试用户',
+      avatarUrl: null,
+      role: Role.MEMBER,
+      status: UserStatus.ACTIVE,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    usersService.getSelf.mockResolvedValue(selfFixture);
+    emailCodeService.check.mockRejectedValue(new HttpException('验证码错误或已失效', HttpStatus.BAD_REQUEST));
+
+    await expect(
+      service.changePassword(selfFixture.id, {
+        ...captchaFields,
+        currentPassword: 'password123',
+        newPassword: 'newpassword123',
+        emailCode: '000000',
+      }),
+    ).rejects.toThrow(HttpException);
+    expect(emailCodeService.validate).not.toHaveBeenCalled();
+    expect(usersService.updatePasswordHash).not.toHaveBeenCalled();
+  });
+
+  it('改密码：账号未绑定邮箱返回 400', async () => {
+    usersService.getAuthRecordById.mockResolvedValue({
+      id: selfFixture.id,
+      email: null,
+      phone: '13800000000',
+      passwordHash: await hashPassword('password123'),
+      nickname: '测试用户',
+      avatarUrl: null,
+      role: Role.MEMBER,
+      status: UserStatus.ACTIVE,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    usersService.getSelf.mockResolvedValue({ ...selfFixture, email: undefined });
+
+    await expect(
+      service.changePassword(selfFixture.id, {
+        ...captchaFields,
+        currentPassword: 'password123',
+        newPassword: 'newpassword123',
+        emailCode: '123456',
+      }),
+    ).rejects.toThrow('该账号未绑定邮箱');
+    expect(emailCodeService.check).not.toHaveBeenCalled();
+    expect(usersService.updatePasswordHash).not.toHaveBeenCalled();
   });
 
   it('登录成功写登录日志（含 user_id，不落密码）', async () => {
