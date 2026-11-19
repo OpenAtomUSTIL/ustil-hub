@@ -74,8 +74,10 @@ export class FakeRedis {
     const current = this.store.get(key);
     if (current === undefined) return 0;
     if (current === hash) {
-      this.store.delete(key);
-      this.store.delete(attemptsKey);
+      if (argv[3] !== 'keep') {
+        this.store.delete(key);
+        this.store.delete(attemptsKey);
+      }
       return 1;
     }
     const attempts = Number(this.store.get(attemptsKey) ?? '0') + 1;

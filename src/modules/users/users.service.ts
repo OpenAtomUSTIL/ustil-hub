@@ -284,7 +284,6 @@ export class UsersService {
         throw new BadRequestException('邮箱格式错误');
       }
       // v12.0：换绑邮箱必须先通过新邮箱的邮件验证码（purpose=rebind，一次性消费）
-      await this.emailCodeService.validate(value, 'rebind', dto.emailCode ?? '');
     } else if (!isMobilePhone(value, 'zh-CN')) {
       throw new BadRequestException('手机号格式错误');
     }
@@ -298,6 +297,7 @@ export class UsersService {
           if (!current) throw new NotFoundException('用户不存在');
           if (current.role === Role.ADMIN) throw new ForbiddenException('管理员账号初始化后不可修改');
           if (current.passwordHash !== row.passwordHash) throw new BadRequestException('密码已变更，请重试');
+          if (dto.type === 'email') await this.emailCodeService.validate(value, 'rebind', dto.emailCode ?? '');
           const cryptoId = current.cryptoId ?? this.crypto.newCryptoId();
           // v12.0：手机号为可选附加绑定——只更新当前类型字段，不再清空另一标识
           return this.usersRepository.updateIdentifier(id, {

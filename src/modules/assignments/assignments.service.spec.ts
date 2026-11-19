@@ -286,4 +286,35 @@ describe('AssignmentsService', () => {
       updatedAt: now.toISOString(),
     });
   });
+  it.each([
+    [-1, 1, 'OPEN', Role.MEMBER, true],
+    [1, 2, 'NOT_STARTED', Role.MEMBER, false],
+    [-2, -1, 'CLOSED', Role.MEMBER, false],
+    [0, 1, 'OPEN', Role.ALUMNI, true],
+    [-1, 0, 'OPEN', Role.MEMBER, true],
+    [-1, 1, 'OPEN', Role.WHEEL, false],
+  ] as const)('作业时间与角色路径：%s/%s → %s/%s', async (start, end, state, role, canSubmit) => {
+    jest.useFakeTimers(); jest.setSystemTime(now);
+    try {
+      assignmentsRepository.list.mockResolvedValue({ rows: [assignmentRow({ startAt: new Date(now.getTime() + start), deadlineAt: new Date(now.getTime() + end) })], total: 1 });
+      assignmentsRepository.findMySubmissions.mockResolvedValue([]);
+      uploadsService.getAttachmentViews.mockResolvedValue(new Map());
+      const result = await service.list({ page: 1, pageSize: 20 }, { id: '01890a5d-ac96-7000-8000-000000000002', role });
+      expect(result.items[0]).toMatchObject({ state, canSubmit, mySubmission: null });
+    } finally { jest.useRealTimers(); }
+  });
+  it('作业列表含本人有效提交时返回附件和提交信息', async () => {
+    assignmentsRepository.list.mockResolvedValue({ rows: [assignmentRow()], total: 1 });
+    assignmentsRepository.findMySubmissions.mockResolvedValue([submissionRow()]);
+    uploadsService.getAttachmentViews.mockResolvedValue(new Map([[attachmentView.id, attachmentView]]));
+    const result = await service.list({ page: 1, pageSize: 20 }, { id: '01890a5d-ac96-7000-8000-000000000002', role: Role.MEMBER });
+    expect(result.items[0].mySubmission?.attachment.id).toBe(attachmentView.id);
+  });
+  it('提交引用的附件丢失时返回 404，不拼出不完整的数据', async () => {
+    assignmentsRepository.list.mockResolvedValue({ rows: [assignmentRow()], total: 1 });
+    assignmentsRepository.findMySubmissions.mockResolvedValue([submissionRow()]);
+    uploadsService.getAttachmentViews.mockResolvedValue(new Map());
+    await expect(service.list({ page: 1, pageSize: 20 }, { id: '01890a5d-ac96-7000-8000-000000000002', role: Role.MEMBER })).rejects.toMatchObject({ status: 404 });
+  });
+
 });

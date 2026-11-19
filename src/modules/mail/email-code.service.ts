@@ -81,6 +81,15 @@ export class EmailCodeService {
 
   /** 校验并一次性消费验证码；失败限次后作废（与 CaptchaService 同一 Lua 语义） */
   async validate(email: string, purpose: EmailCodePurpose, code: string): Promise<void> {
+    return this.verify(email, purpose, code, true);
+  }
+
+  /** 预检查保留正确验证码；错误输入仍累计次数，最终写入前必须 validate 原子消费。 */
+  async check(email: string, purpose: EmailCodePurpose, code: string): Promise<void> {
+    return this.verify(email, purpose, code, false);
+  }
+
+  private async verify(email: string, purpose: EmailCodePurpose, code: string, consume: boolean): Promise<void> {
     const hmac = this.crypto.hmac(email.toLowerCase());
     const trimmed = code.trim();
     if (!trimmed) {
@@ -89,7 +98,7 @@ export class EmailCodeService {
     const consumed = Number(await this.redis.eval(
       `local current = redis.call('GET', KEYS[1])
        if current == ARGV[1] then
-         redis.call('DEL', KEYS[1], KEYS[2])
+         if ARGV[4] ~= 'keep' then redis.call('DEL', KEYS[1], KEYS[2]) end
          return 1
        end
        if current then
@@ -104,6 +113,7 @@ export class EmailCodeService {
       this.hash(trimmed),
       CODE_TTL_SECONDS,
       MAX_ATTEMPTS,
+      consume ? 'consume' : 'keep',
     ));
     if (consumed !== 1) {
       throw new HttpException(CODE_ERROR, HttpStatus.BAD_REQUEST);

@@ -2,7 +2,7 @@ import * as captchaImage from '../src/modules/captcha/captcha-image';
 /* 注册 / 登录 / 改密 / 换绑 / 转正 e2e（邀请码分支 + v6.0 验证码与密码规则）
    风格与 guards.e2e-spec 一致：真实 controller + service，仓储与外部依赖打桩；
    REDIS_CLIENT 用 FakeRedis 真模拟 captcha Lua 语义（比对哈希→命中即焚/失败限次） */
-import { ConflictException, INestApplication } from '@nestjs/common';
+import { ConflictException, INestApplication, ServiceUnavailableException } from '@nestjs/common';
 import { HttpAdapterHost } from '@nestjs/core';
 import { APP_GUARD } from '@nestjs/core';
 import { Test } from '@nestjs/testing';
@@ -273,6 +273,26 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
   });
 
   // ===== 邀请码分支（既有用例，已补验证码字段） =====
+
+  it('邮件入队失败：接口明确返回 503 而不是发送成功', async () => {
+    mailService.send.mockRejectedValueOnce(new ServiceUnavailableException('验证码邮件暂时无法发送，请稍后重试'));
+    const res = await request(app.getHttpServer()).post('/auth/email-code')
+      .send({ email: 'a@example.com', purpose: 'register', ...(await captchaOf()) }).expect(503);
+    expect(res.body.message).toBe('验证码邮件暂时无法发送，请稍后重试');
+  });
+
+  it('邀请码错误后修正，可复用同一邮件验证码完成注册', async () => {
+    const emailCode = await emailCodeOf('a@example.com');
+    inviteCodesRepository.findByCode.mockResolvedValue(null);
+    await request(app.getHttpServer()).post('/auth/register')
+      .send({ ...registerBody, emailCode, inviteCode: 'NOPE2345XX', ...(await captchaOf()) }).expect(409);
+    inviteCodesRepository.findByCode.mockResolvedValue(codeRow);
+    inviteCodesRepository.tryConsume.mockResolvedValue({ ...codeRow, usedCount: 1 });
+    usersRepository.insert.mockResolvedValue(row({ role: Role.MEMBER }));
+    await request(app.getHttpServer()).post('/auth/register')
+      .send({ ...registerBody, emailCode, inviteCode: 'ABCD2345EF', ...(await captchaOf()) }).expect(201);
+    expect(mailService.send).toHaveBeenCalledTimes(1);
+  });
 
   it('无码注册：创建 VISITOR 账号', async () => {
     usersRepository.insert.mockResolvedValue(row({ role: Role.VISITOR }));

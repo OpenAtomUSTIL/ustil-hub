@@ -134,12 +134,14 @@ export class AuthService {
     await this.captchaService.validate(dto.captchaId, dto.captchaCode);
     // v12.0：仅邮箱注册 + 强制邮箱验证（邮件验证码，一次性消费）
     const identifier = normalizeIdentifier(dto.identifier);
-    await this.emailCodeService.validate(identifier, 'register', dto.emailCode);
+    await this.emailCodeService.check(identifier, 'register', dto.emailCode);
     const passwordHash = await hashPassword(dto.password);
     // 有码 → MEMBER 并核销；无码 → VISITOR（7 天清理对象）
     const invite = dto.inviteCode ? await this.inviteCodesService.consume(dto.inviteCode) : null;
     let user: UserSelf;
     try {
+      // 邀请码通过后再原子消费邮件码；邀请码错误可使用原邮件码重试。
+      await this.emailCodeService.validate(identifier, 'register', dto.emailCode);
       user = await this.usersService.createUser({
         email: identifier,
         phone: null,

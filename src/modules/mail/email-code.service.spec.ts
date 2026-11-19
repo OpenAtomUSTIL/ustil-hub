@@ -9,6 +9,9 @@ import { RedisClient } from '../../db/redis';
 import { FakeRedis } from '../../../test/fake-redis';
 import { EmailCodeService } from './email-code.service';
 import { MailService } from './mail.service';
+import type { AppConfig } from '../../config/configuration';
+import type { Queue } from 'bullmq';
+import type { MailJobData } from './mail.types';
 
 const hmacOf = (crypto: CryptoService, email: string): string => crypto.hmac(email.toLowerCase());
 const sha256 = (code: string): string => createHash('sha256').update(code).digest('hex');
@@ -36,6 +39,15 @@ describe('EmailCodeService', () => {
       crypto,
       mailService as unknown as MailService,
     );
+  });
+
+  it('预检查不消耗正确邮件码，最终提交原子消费且不能再次使用', async () => {
+    await service.issue('a@example.com', 'register');
+    const code = sentCode();
+    await service.check('a@example.com', 'register', code);
+    await service.check('a@example.com', 'register', code);
+    await service.validate('a@example.com', 'register', code);
+    await expect(service.check('a@example.com', 'register', code)).rejects.toMatchObject({ status: 400 });
   });
 
   it('issue：生成 6 位码存 sha256（不落明文）并发 verify-code 邮件', async () => {
@@ -131,5 +143,20 @@ describe('EmailCodeService', () => {
     await expect(service.validate('a@example.com', 'rebind', sentCode())).rejects.toThrow(
       '验证码错误或已失效',
     );
+  });
+});
+
+
+describe('验证码邮件发送状态', () => {
+  const vars = { code: '123456' };
+  it('邮件功能未启用时验证码请求必须失败，不能假报成功', async () => {
+    const service = new MailService({ mail: { driver: 'none' } } as AppConfig, null);
+    await expect(service.send('user@example.test', 'verify-code', vars)).rejects.toMatchObject({ status: 503 });
+  });
+  it('验证码入队失败必须返回可恢复的错误', async () => {
+    const queue = { add: jest.fn().mockRejectedValue(new Error('queue unavailable')) };
+    const service = new MailService({ mail: { driver: 'api' } } as AppConfig, queue as unknown as Queue<MailJobData>);
+    await expect(service.send('user@example.test', 'verify-code', vars)).rejects.toMatchObject({ status: 503 });
+    await expect(service.send('user@example.test', 'notice-reply', vars)).resolves.toBeUndefined();
   });
 });

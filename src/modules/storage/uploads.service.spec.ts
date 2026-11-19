@@ -1,3 +1,9 @@
+import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { S3Client } from '@aws-sdk/client-s3';
+import { LocalStorageService } from './local-storage.service';
+import { R2StorageService } from './r2-storage.service';
 import { BadRequestException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { AppConfig, configuration } from '../../config/configuration';
@@ -179,4 +185,49 @@ describe('UploadsService', () => {
     expect(attachmentsRepository.listPendingDeletions).toHaveBeenCalledTimes(1);
   });
 
+});
+
+
+describe('存储独立路径覆盖', () => {
+  const key = '01890a5d-ac96-7000-8000-000000000001.pdf';
+  let directory: string;
+  beforeEach(async () => { directory = await fs.mkdtemp(join(tmpdir(), 'ustil-storage-path-')); });
+  afterEach(async () => { jest.restoreAllMocks(); await fs.rm(directory, { recursive: true, force: true }); });
+  it('本地文件写入、读取、大小探测、删除、重复删除', async () => {
+    const storage = new LocalStorageService(directory);
+    await storage.put(key, Buffer.from('file'), 'application/pdf');
+    expect((await storage.get(key)).data.toString()).toBe('file');
+    expect((await storage.get(key)).contentType).toBe('application/pdf');
+    expect(await storage.stat(key)).toBe(4);
+    expect(storage.getUrl(key)).toBe('/api/v1/storage/files/' + key);
+    await storage.remove(key); await storage.remove(key);
+    expect(await storage.stat(key)).toBeNull();
+    await expect(storage.get(key)).rejects.toMatchObject({ status: 404 });
+  });
+  it.each(['../secret', '/etc/passwd', 'invalid.pdf', 'a/b.pdf'])('本地路径非法时拒绝读写：%s', async (invalid) => {
+    const storage = new LocalStorageService(directory);
+    await expect(storage.put(invalid, Buffer.from('x'), 'text/plain')).rejects.toMatchObject({ status: 404 });
+    await expect(storage.get(invalid)).rejects.toMatchObject({ status: 404 });
+  });
+  function remote() { return new R2StorageService({ endpoint: 'https://r2.example.test', accessKeyId: 'test', secretAccessKey: 'test', bucket: 'test', publicBaseUrl: '' }); }
+  it('R2 适配层读写删除正常，缺少 ContentType 时回退扩展名', async () => {
+    const send = jest.spyOn(S3Client.prototype, 'send').mockImplementation(async () => ({ Body: { transformToByteArray: async () => Buffer.from('remote') }, ContentLength: 6 }));
+    const storage = remote();
+    await storage.put(key, Buffer.from('x'), 'application/pdf'); await storage.remove(key);
+    expect((await storage.get(key)).contentType).toBe('application/pdf');
+    expect(await storage.stat(key)).toBe(6);
+    expect(storage.getUrl(key)).toContain(key);
+    expect(send).toHaveBeenCalledTimes(4);
+  });
+  it('R2 对象丢失、空响应、网络错误与非法路径', async () => {
+    const send = jest.spyOn(S3Client.prototype, 'send').mockImplementation(async () => ({}));
+    const storage = remote();
+    await expect(storage.get(key)).rejects.toMatchObject({ status: 404 });
+    expect(await storage.stat(key)).toBeNull();
+    await expect(storage.get('../secret')).rejects.toMatchObject({ status: 404 });
+    expect(() => storage.getUrl('../secret')).toThrow();
+    send.mockImplementation(async () => { throw new Error('offline'); });
+    await expect(storage.get(key)).rejects.toMatchObject({ status: 404 });
+    expect(await storage.stat(key)).toBeNull();
+  });
 });

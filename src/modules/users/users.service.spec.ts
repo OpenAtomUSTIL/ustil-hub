@@ -1,3 +1,6 @@
+jest.mock('@nestjs/schedule', () => ({ Cron: () => () => undefined }));
+import { SchedulerService } from '../admin/scheduler.service';
+import { SnakeService } from './snake.service';
 import {
   BadRequestException,
   ConflictException,
@@ -1078,5 +1081,25 @@ describe('用户加密标识并发回归', () => {
     await Promise.all([service.updateProfilePage(live.id, { bio: 'bio' }), service.updateProfilePage(live.id, { company: 'company' })]);
     expect(crypto.open('profile', live.bio, live.cryptoId!)).toBe('bio');
     expect(crypto.open('profile', live.company, live.cryptoId!)).toBe('company');
+  });
+});
+
+
+describe('后台维护任务路径覆盖', () => {
+  it.each([0, 2])('清理过期访客、文件重试与成员晋升：处理数量 %s', async (count) => {
+    const users = { cleanupExpiredVisitors: jest.fn().mockResolvedValue(count), promoteExpiredMembers: jest.fn().mockResolvedValue(count) };
+    const snakes = { refreshAll: jest.fn().mockResolvedValue(count) };
+    const uploads = { flushPendingFileDeletions: jest.fn().mockResolvedValue(count) };
+    const scheduler = new SchedulerService(users as unknown as UsersService, snakes as unknown as SnakeService, uploads as unknown as UploadsService);
+    await scheduler.cleanupVisitors(); await scheduler.cleanupFiles(); await scheduler.promoteMembers(); await scheduler.refreshSnakes();
+    expect(users.cleanupExpiredVisitors).toHaveBeenCalledTimes(1);
+    expect(users.promoteExpiredMembers).toHaveBeenCalledTimes(1);
+    expect(uploads.flushPendingFileDeletions).toHaveBeenCalledTimes(1);
+    expect(snakes.refreshAll).toHaveBeenCalledTimes(1);
+  });
+  it('清理失败会向调用方报告，不假报处理成功', async () => {
+    const users = { cleanupExpiredVisitors: jest.fn().mockRejectedValue(new Error('db offline')) };
+    const scheduler = new SchedulerService(users as unknown as UsersService, {} as SnakeService, {} as UploadsService);
+    await expect(scheduler.cleanupVisitors()).rejects.toThrow('db offline');
   });
 });

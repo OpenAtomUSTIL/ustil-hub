@@ -474,7 +474,7 @@ paths:
               captchaCode: 7k2p
       responses:
         '204':
-          description: 验证码已发送至邮件，无响应体
+          description: 验证码邮件已入队，无响应体；最终投递异步完成
         '400':
           description: '图形验证码错误或已失效「验证码错误或已失效」/ 邮箱格式非法 / purpose 非法'
           content:
@@ -499,6 +499,12 @@ paths:
                 message: 邮件发送过于频繁，请稍后再试
                 path: /api/v1/auth/email-code
                 timestamp: '2026-11-09T03:04:10.212Z'
+        '503':
+          description: 邮件未启用或入队失败，验证码邮件暂时无法发送，请稍后重试
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /auth/password/forgot:
     post:
       tags: [认证]

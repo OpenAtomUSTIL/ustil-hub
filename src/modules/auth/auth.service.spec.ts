@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, HttpException, HttpStatus, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, NotFoundException, HttpException, HttpStatus, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 import { AppConfig, configuration } from '../../config/configuration';
@@ -115,6 +115,7 @@ describe('AuthService', () => {
   };
   // v12.0 事务邮件：验证码 / 发信 / 一次性重置 token / CryptoService（退订 token HMAC）
   const emailCodeService = {
+    check: jest.fn(),
     validate: jest.fn(),
     issue: jest.fn(),
   };
@@ -136,6 +137,7 @@ describe('AuthService', () => {
     // clearAllMocks 不清实现，逐个复位避免用例间互相污染
     captchaService.validate.mockReset();
     emailCodeService.validate.mockReset();
+    emailCodeService.check.mockReset();
     const moduleRef = await Test.createTestingModule({
       providers: [
         AuthService,
@@ -190,7 +192,7 @@ describe('AuthService', () => {
   });
 
   it('注册：邮件验证码校验失败 400 且不落库', async () => {
-    emailCodeService.validate.mockRejectedValue(new BadRequestException('验证码错误或已失效'));
+    emailCodeService.check.mockRejectedValue(new BadRequestException('验证码错误或已失效'));
 
     await expect(
       service.register({
@@ -260,6 +262,7 @@ describe('AuthService', () => {
       }),
     ).rejects.toThrow(ConflictException);
     expect(usersService.createUser).not.toHaveBeenCalled();
+    expect(emailCodeService.validate).not.toHaveBeenCalled();
   });
 
   it('注册落库失败：回退核销计数', async () => {
@@ -634,4 +637,16 @@ describe('AuthService', () => {
     );
     expect(usersService.updateNoticePref).not.toHaveBeenCalled();
   });
+  it.each([null, { id: selfFixture.id, status: UserStatus.BANNED }])('重置链接对应账号已删除或封禁时拒绝修改：%j', async (record) => {
+    resetTokens.consume.mockResolvedValue(selfFixture.id);
+    usersService.getAuthRecordById.mockResolvedValue(record);
+    await expect(service.resetPassword({ token: 'token', newPassword: 'NewPassword123', newPasswordConfirm: 'NewPassword123' })).rejects.toThrow(BadRequestException);
+    expect(usersService.updatePasswordHash).not.toHaveBeenCalled();
+  });
+  it('退订链接对应账号已删除时统一返回无效链接', async () => {
+    usersService.updateNoticePref.mockRejectedValueOnce(new NotFoundException());
+    const token = signUnsubscribeToken(cryptoStub as unknown as CryptoService, selfFixture.id);
+    await expect(service.unsubscribe({ token })).rejects.toThrow('链接无效或已过期');
+  });
+
 });
