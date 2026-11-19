@@ -27,6 +27,8 @@ export const issues = pgTable(
     status: issueStatusEnum('status').notNull().default('OPEN'),
     answeredBy: uuid('answered_by').references(() => users.id, { onDelete: 'set null' }),
     answeredAt: timestamp('answered_at', { withTimezone: true }),
+    // 业务软删除（WHEEL/ADMIN 删讨论）：置 deleted_at 进回收站可恢复；FK 级联仍为硬删
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()
@@ -37,6 +39,7 @@ export const issues = pgTable(
     index('issues_author_id_idx').on(t.authorId),
     index('issues_status_idx').on(t.status),
     index('issues_created_at_idx').on(t.createdAt),
+    index('issues_deleted_at_idx').on(t.deletedAt),
     uniqueIndex('issues_slug_key').on(t.slug),
   ],
 );

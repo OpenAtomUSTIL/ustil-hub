@@ -2,6 +2,7 @@ import { Test } from '@nestjs/testing';
 import { Role } from '../../common/decorators/roles.decorator';
 import { AnnouncementsService } from '../announcements/announcements.service';
 import { ArticlesService } from '../articles/articles.service';
+import { AssignmentsService } from '../assignments/assignments.service';
 import { IssuesService } from '../issues/issues.service';
 import { ResourcesService } from '../resources/resources.service';
 import { TrashService } from './trash.service';
@@ -25,8 +26,14 @@ describe('TrashService', () => {
     restore: jest.fn(),
   };
   const issuesService = {
+    listDeletedIssues: jest.fn(),
+    restoreIssue: jest.fn(),
     listDeletedReplies: jest.fn(),
     restoreReply: jest.fn(),
+  };
+  const assignmentsService = {
+    listDeletedAssignments: jest.fn(),
+    restoreAssignment: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -38,12 +45,15 @@ describe('TrashService', () => {
         { provide: AnnouncementsService, useValue: announcementsService },
         { provide: ResourcesService, useValue: resourcesService },
         { provide: IssuesService, useValue: issuesService },
+        { provide: AssignmentsService, useValue: assignmentsService },
       ],
     }).compile();
     service = moduleRef.get(TrashService);
     articlesService.listDeleted.mockResolvedValue({ rows: [], total: 0 });
     announcementsService.listDeleted.mockResolvedValue({ rows: [], total: 0 });
     resourcesService.listDeleted.mockResolvedValue({ rows: [], total: 0 });
+    issuesService.listDeletedIssues.mockResolvedValue({ rows: [], total: 0 });
+    assignmentsService.listDeletedAssignments.mockResolvedValue({ rows: [], total: 0 });
     issuesService.listDeletedReplies.mockResolvedValue({ rows: [], total: 0 });
   });
 
@@ -80,7 +90,7 @@ describe('TrashService', () => {
     expect(announcementsService.listDeleted).not.toHaveBeenCalled();
   });
 
-  it('不带 type：四类合并按 deletedAt desc 分页', async () => {
+  it('不带 type：六类合并按 deletedAt desc 分页', async () => {
     articlesService.listDeleted.mockResolvedValue({
       rows: [
         {
@@ -122,11 +132,15 @@ describe('TrashService', () => {
     await service.restore('ARTICLE', 'a-1', { id: 'wheel-1', role: Role.WHEEL });
     await service.restore('ANNOUNCEMENT', 'n-1', { id: 'wheel-1', role: Role.WHEEL });
     await service.restore('RESOURCE', 'r-1', { id: 'wheel-1', role: Role.WHEEL });
+    await service.restore('ISSUE', 'i-1', { id: 'wheel-1', role: Role.WHEEL });
+    await service.restore('ASSIGNMENT', 'h-1', { id: 'wheel-1', role: Role.WHEEL });
     await service.restore('COMMENT', 'c-1', { id: 'wheel-1', role: Role.WHEEL });
 
     expect(articlesService.restore).toHaveBeenCalledWith('a-1', expect.objectContaining({ role: Role.WHEEL }));
     expect(announcementsService.restore).toHaveBeenCalledWith('n-1', expect.anything());
     expect(resourcesService.restore).toHaveBeenCalledWith('r-1', expect.anything());
+    expect(issuesService.restoreIssue).toHaveBeenCalledWith('i-1', expect.anything());
+    expect(assignmentsService.restoreAssignment).toHaveBeenCalledWith('h-1', expect.anything());
     expect(issuesService.restoreReply).toHaveBeenCalledWith('c-1', expect.anything());
   });
 });

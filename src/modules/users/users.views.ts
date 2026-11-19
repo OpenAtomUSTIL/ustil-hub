@@ -105,7 +105,8 @@ export interface UserProfileView {
     replies: number;
     submissions: number;
   };
-  topTags: { name: string; count: number }[];
+  /** 擅长标签（用户自配置，统一标签系统 USER 类 taggings；空数组 = 未配置） */
+  skillTags: string[];
   pinnedItems: { type: string; id: string; slug: string; title: string; url?: string }[];
   isSelf: boolean;
   isFollowing: boolean;

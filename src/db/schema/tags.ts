@@ -1,12 +1,14 @@
 import { index, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 import { v7 as uuidv7 } from 'uuid';
 
-export const tagTargetTypeEnum = pgEnum('tag_target_type', ['ARTICLE', 'ISSUE', 'RESOURCE']);
+// USER：个人主页「擅长标签」（用户自配置，targetId = users.id）
+export const tagTargetTypeEnum = pgEnum('tag_target_type', ['ARTICLE', 'ISSUE', 'RESOURCE', 'USER']);
 
 export const TagTargetType = {
   ARTICLE: 'ARTICLE',
   ISSUE: 'ISSUE',
   RESOURCE: 'RESOURCE',
+  USER: 'USER',
 } as const;
 export type TagTargetType = (typeof TagTargetType)[keyof typeof TagTargetType];
 

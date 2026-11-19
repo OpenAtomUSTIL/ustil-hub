@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Page } from '../../common/dto/page';
 import { CurrentAuthUser } from '../../common/decorators/current-user.decorator';
 import { Role } from '../../common/decorators/roles.decorator';
@@ -261,6 +261,47 @@ export class AssignmentsService {
       detail: { title: dto.title ?? row.title },
     });
     return this.getDetail(id, user);
+  }
+
+  // ===== 作业软删除（WHEEL/ADMIN） =====
+
+  async softDeleteAssignment(id: string, user: CurrentAuthUser): Promise<void> {
+    requireRole(user, Role.WHEEL, Role.ADMIN);
+    const row = await this.requireAssignment(id);
+    await this.assignmentsRepository.softDeleteAssignment(id);
+    await this.auditLogService.record({
+      actor: user,
+      action: 'assignment.delete',
+      targetType: 'ASSIGNMENT',
+      targetId: id,
+      detail: { title: row.title },
+    });
+  }
+
+  async listDeletedAssignments(
+    page: number,
+    pageSize: number,
+  ): Promise<{ rows: AssignmentRow[]; total: number }> {
+    return this.assignmentsRepository.listDeletedAssignments(page, pageSize);
+  }
+
+  async restoreAssignment(id: string, user: CurrentAuthUser): Promise<void> {
+    requireRole(user, Role.WHEEL, Role.ADMIN);
+    const row = await this.assignmentsRepository.findWithDeletedById(id);
+    if (!row) {
+      throw new NotFoundException('作业不存在');
+    }
+    if (!row.deletedAt) {
+      throw new ConflictException('内容未被删除，无需恢复');
+    }
+    await this.assignmentsRepository.restoreAssignment(id);
+    await this.auditLogService.record({
+      actor: user,
+      action: 'assignment.restore',
+      targetType: 'ASSIGNMENT',
+      targetId: id,
+      detail: { title: row.title },
+    });
   }
 
   async submit(

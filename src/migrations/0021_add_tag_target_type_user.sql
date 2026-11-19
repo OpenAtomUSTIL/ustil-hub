@@ -1,0 +1,1 @@
+ALTER TYPE "public"."tag_target_type" ADD VALUE 'USER';

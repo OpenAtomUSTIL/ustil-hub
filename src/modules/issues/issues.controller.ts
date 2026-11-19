@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query } from '@nestjs/common';
 import { CurrentAuthUser, CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles, Role } from '../../common/decorators/roles.decorator';
 import { uuidParamPipe } from '../../common/pipes/uuid-param.pipe';
@@ -46,5 +46,13 @@ export class IssuesController {
     @Body() dto: ChangeIssueStatusDto,
   ) {
     return this.issuesService.changeStatus(id, user, dto);
+  }
+
+  // 软删除讨论（WHEEL/ADMIN）：进后台回收站可恢复
+  @Delete(':id')
+  @HttpCode(204)
+  @Roles(Role.WHEEL, Role.ADMIN)
+  remove(@Param('id', uuidParamPipe) id: string, @CurrentUser() user: CurrentAuthUser) {
+    return this.issuesService.softDeleteIssue(id, user);
   }
 }

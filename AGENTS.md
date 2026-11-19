@@ -209,6 +209,7 @@ controller → service → repository(db)
 | 浏览作业 | ❌ | ✅ | ✅ | ✅ | ✅ |
 | 创建、编辑、删除**本人**文章 | ❌ | ✅（先审后发） | ✅（先发后审） | ✅ | ✅ |
 | 删除**他人**文章 / 删除他人内容 | ❌ | ❌ | ❌ | ❌ | ✅ |
+| 删除讨论 / 删除作业（软删进回收站，可恢复） | ❌ | ❌ | ❌ | ✅ | ✅ |
 | 审核文章（通过/拒绝/隐藏） | ❌ | ❌ | ❌ | ✅ | ✅ |
 | 发布、编辑作业 | ❌ | ❌ | ✅ | ✅ | ✅ |
 | 提交作业 | ❌ | ✅ | ✅ | ❌ | ❌ |
@@ -221,7 +222,7 @@ controller → service → repository(db)
 
 补充规则：
 - 校友（`ALUMNI`）**只读密码以外无权限**——他们能看 issue、能回复、能发内容，但**不能**管理他人、**不能**看他人联系方式。
-- 个人主页资料字段（`company` / `location` / `link` / `socials`，v9.0）为**公开可见**（对齐 GitHub 资料语义）；邮箱/手机号仍仅本人可见（库内为密文，见 §11.5）；链接宽松校验（可裸域名，展示层补协议）。
+- 个人主页资料字段（`company` / `location` / `link` / `socials`，v9.0）为**公开可见**（对齐 GitHub 资料语义）；擅长标签（`skillTags`，用户自配置、统一标签系统 `USER` 类 taggings，≤10 个）同为公开可见；邮箱/手机号仍仅本人可见（库内为密文，见 §11.5）；链接宽松校验（可裸域名，展示层补协议）。
 - 文档站与子域会话（v11.0）：API 文档站托管于 `docs.` 子域（nginx `auth_request` 探测 `GET /auth/docs-probe`，`MEMBER`+ 放行，`VISITOR`/未登录跳登录页）；`COOKIE_DOMAIN`（如 `.openatomustil.cn`）使主站会话 cookie 对子域可见以支持试调，`CORS_ORIGIN` 支持逗号分隔多源；主域 `/docs` 旧路径 302 到文档子域。试调的安全边界始终是服务端 RBAC。
 - 所有涉及"本人"的操作，`MUST` 在 service 层校验 `resource.authorId === currentUser.id`，`MUST NOT` 只靠前端隐藏按钮。
 - 被封禁账号（`users.status = 'BANNED'`）`MUST` 在 `JwtAuthGuard` 里直接 403，不进入业务逻辑。
@@ -312,6 +313,7 @@ interface StorageService {
 - **截止判断以服务端时间为准**。前端倒计时仅为展示，`MUST NOT` 由前端决定能否提交。
 - 提交 `MUST` 校验：当前用户是 `MEMBER` 或 `ALUMNI`（`VISITOR` 禁止查阅/提交作业）、作业处于可提交窗口、文件符合白名单与大小。
 - 允许重复提交 `SHOULD` 覆盖旧提交（保留 `updated_at`），`MUST NOT` 允许删除已归档的提交。
+- 删除作业（`WHEEL`/`ADMIN`）= 软删除进回收站（§21），`MUST NOT` 连带删提交；软删期间作业与提交一并隐藏，恢复一并回来。
 
 ## 14. Issue 领域规则
 
@@ -319,6 +321,7 @@ interface StorageService {
 - 创建 issue 默认 `OPEN`（`VISITOR` 仅可回复、不可创建），`ADMIN` / `ALUMNI` / `WHEEL` 可变更状态。
 - `MUST NOT` 实现积分：答对不加分，只有状态流转。
 - 未解决 → 已解答时记录 `answeredBy` 与 `answeredAt`。
+- 删除讨论（`WHEEL`/`ADMIN`）= 软删除进回收站（§21），回复随讨论一并隐藏、恢复一并回来。
 
 ## 15. Redis 职责
 
@@ -385,5 +388,5 @@ pnpm db:migrate         # drizzle-kit migrate（部署 job / 本地手动）
 - 文章是否支持富文本 / Markdown 渲染（影响存储与 XSS 过滤）
 - 作业是否需要"评分"字段（当前只做提交，不做评分）
 - ~~邮件通知的发送时机与模板（后续阶段）~~ → **已拍板（2026-11-19）**：v12.0 引入事务邮件（腾讯云邮件推送 SES），模板定稿 `docs/mail-templates/`；通知邮件 = 站内通知的可选副本（默认关、用户自选、一键退订），节奏先即时（回复类带内容摘要），每日摘要后置；验证码/重置为强事务邮件。
-- ~~软删除 vs 硬删除策略（当前默认硬删除，封禁用 `status` 字段）~~ → **已拍板（2026-11-11）**：内容类（articles / announcements / resources / issue_replies）的业务 DELETE = 软删除（`deleted_at`），后台回收站可恢复（真回滚）；用户剔除仍为硬删 FK 级联；封禁继续用 `status` 字段。
+- ~~软删除 vs 硬删除策略（当前默认硬删除，封禁用 `status` 字段）~~ → **已拍板（2026-11-11，2026-11-19 扩展至 issues / assignments）**：内容类（articles / announcements / resources / issues / assignments / issue_replies）的业务 DELETE = 软删除（`deleted_at`），后台回收站可恢复（真回滚）；用户剔除仍为硬删 FK 级联；封禁继续用 `status` 字段。
 - 前端仓库最终位置（当前前端约定见 `web/AGENTS.md`，若改为 monorepo 需 `git mv`）

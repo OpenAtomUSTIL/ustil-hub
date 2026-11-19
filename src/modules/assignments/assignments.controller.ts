@@ -1,7 +1,9 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
   Param,
   Patch,
   Post,
@@ -69,6 +71,14 @@ export class AssignmentsController {
     @Body() dto: UpdateAssignmentDto,
   ) {
     return this.assignmentsService.update(id, user, dto);
+  }
+
+  // 软删除作业（WHEEL/ADMIN）：进后台回收站可恢复，不连带删提交
+  @Delete(':id')
+  @HttpCode(204)
+  @Roles(Role.WHEEL, Role.ADMIN)
+  remove(@Param('id', uuidParamPipe) id: string, @CurrentUser() user: CurrentAuthUser) {
+    return this.assignmentsService.softDeleteAssignment(id, user);
   }
 
   @Post(':id/submissions')

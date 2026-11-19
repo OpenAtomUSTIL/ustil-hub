@@ -40,7 +40,9 @@ export class IssuesRepository {
       }
       conditions.push(inArray(issues.id, filters.tagTargetIds));
     }
-    const where = conditions.length > 0 ? and(...conditions) : undefined;
+    // 软删讨论不展示
+    conditions.push(isNull(issues.deletedAt));
+    const where = and(...conditions);
     const rows = await db
       .select()
       .from(issues)
@@ -52,8 +54,13 @@ export class IssuesRepository {
     return { rows, total: totalRows[0]?.count ?? 0 };
   }
 
+  // 软删讨论视为不存在（详情/回复/改状态/删除统一 404）；回收站走 findDeletedById
   async findById(id: string): Promise<IssueRow | null> {
-    const rows = await db.select().from(issues).where(eq(issues.id, id)).limit(1);
+    const rows = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.id, id), isNull(issues.deletedAt)))
+      .limit(1);
     return rows[0] ?? null;
   }
 
@@ -67,7 +74,11 @@ export class IssuesRepository {
   }
 
   async findBySlug(slug: string): Promise<IssueRow | null> {
-    const rows = await db.select().from(issues).where(eq(issues.slug, slug)).limit(1);
+    const rows = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.slug, slug), isNull(issues.deletedAt)))
+      .limit(1);
     return rows[0] ?? null;
   }
 
@@ -85,6 +96,50 @@ export class IssuesRepository {
     patch: { status: IssueStatus; answeredBy: string | null; answeredAt: Date | null },
   ): Promise<IssueRow | null> {
     const rows = await db.update(issues).set(patch).where(eq(issues.id, id)).returning();
+    return rows[0] ?? null;
+  }
+
+  // ===== 讨论软删除 / 回收站 =====
+
+  // 软删除：置 deleted_at（回复经 FK 保留，随讨论一并隐藏、恢复一并回来）
+  async softDeleteIssue(id: string): Promise<IssueRow | null> {
+    const rows = await db
+      .update(issues)
+      .set({ deletedAt: new Date() })
+      .where(and(eq(issues.id, id), isNull(issues.deletedAt)))
+      .returning();
+    return rows[0] ?? null;
+  }
+
+  // 恢复用：含软删行（未删行命中时由 service 判 409）
+  async findWithDeletedById(id: string): Promise<IssueRow | null> {
+    const rows = await db.select().from(issues).where(eq(issues.id, id)).limit(1);
+    return rows[0] ?? null;
+  }
+
+  // 回收站：仅软删行，deleted_at desc
+  async listDeletedIssues(
+    page: number,
+    pageSize: number,
+  ): Promise<{ rows: IssueRow[]; total: number }> {
+    const where = isNotNull(issues.deletedAt);
+    const rows = await db
+      .select()
+      .from(issues)
+      .where(where)
+      .orderBy(desc(issues.deletedAt))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize);
+    const totalRows = await db.select({ count: sql<number>`count(*)::int` }).from(issues).where(where);
+    return { rows, total: totalRows[0]?.count ?? 0 };
+  }
+
+  async restoreIssue(id: string): Promise<IssueRow | null> {
+    const rows = await db
+      .update(issues)
+      .set({ deletedAt: null })
+      .where(and(eq(issues.id, id), isNotNull(issues.deletedAt)))
+      .returning();
     return rows[0] ?? null;
   }
 

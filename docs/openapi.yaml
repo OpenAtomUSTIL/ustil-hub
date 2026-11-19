@@ -20,13 +20,13 @@ info:
     - **分页**：请求 `?page=1&pageSize=20`（`pageSize` 默认 20、上限 100，超出直接 400 拒绝，不静默截断）；响应 `{ items, total, page, pageSize }`。
     - **时间**：一律 ISO 8601 UTC 字符串（`2026-11-09T03:04:10.212Z`）；不接受 Unix 时间戳、无时区时间或无效日历日期。
     - **校验**：全局 `ValidationPipe` 开启 `whitelist + forbidNonWhitelisted`，请求体中出现未声明字段直接 400。标题与昵称创建/更新时去除首尾空白后校验，纯空白返回 400；标题最长 200 字符、昵称最长 50 字符。
-    - **角色（RBAC 五级）**：`VISITOR` 临时访客（非邀请码注册，7 天内未持码转正自动删号，禁止查阅/提交作业）/ `MEMBER` 学习成员（持码注册，发起讨论、提交作业）/ `ALUMNI` 校友（发文章、布置作业）/ `WHEEL` 负责人（邀请码、剔除、提拔、发布内容、变更 issue 状态）/ `ADMIN` 管理员（任免 WHEEL、封禁、删他人内容；`ADMIN` 账号本身不可被改角色/删除/封禁）。
+    - **角色（RBAC 五级）**：`VISITOR` 临时访客（非邀请码注册，7 天内未持码转正自动删号，禁止查阅/提交作业）/ `MEMBER` 学习成员（持码注册，发起讨论、提交作业）/ `ALUMNI` 校友（发文章、布置作业）/ `WHEEL` 负责人（邀请码、剔除、提拔、发布内容、变更 issue 状态、删除讨论/作业）/ `ADMIN` 管理员（任免 WHEEL、封禁、删他人内容；`ADMIN` 账号本身不可被改角色/删除/封禁）。
     - **权限标注**：description 中 `🔓公开` 无需登录；`🔐登录` 任意已登录角色；`🛡️角色` 需指定角色；`👤` 需资源归属（所有者）校验；`⏰` 受业务状态/时间窗口约束。
     - **slug 寻址（去 id 化）**：文章 / 作业 / 公告 / 资源 / Issue 创建时由标题生成唯一 slug（URL 不暴露裸 id）。详情类读接口 `:id` 可传 uuid 或 slug（uuid 优先匹配）；写接口（编辑 / 删除 / 审核 / 状态变更 / 回复 / 提交）仅接受 uuid，传 slug 返回 400。
     - **解析式寻址（用户）**：用户读接口 `:id` 可传 uuid 或 username；用户管理类路径参数（封禁 / 解封 / 改角色 / 提前提拔 / 剔除学员）支持 uuid / username / email / phone 四种标识（uuid → username（含历史 handle）→ email → phone 依次解析），解析不到返回 404「用户不存在」。查询过滤参数（`userId` / `actorId` / `authorId` / `creatorId` 等）同样支持四种标识，解析不到返回空列表（不报错）。
     - **图形验证码**：`captchaId` + `captchaCode` 为注册 / 登录 / 改密 / 换绑 / 持码转正 / 拉取邮件验证码 / 忘记密码的必填字段；一次性消费（校验通过即作废，复用直接失败），单 `captchaId` 校验失败 3 次作废；校验失败统一 400「验证码错误或已失效」（不区分过期 / 错误 / 已消费）；获取图片按客户端 IP 限每分钟 60 次（超限 429），与登录/注册失败限流叠加。
     - **事务邮件（v12.0）**：注册仅邮箱且须邮件验证码验证（purpose=register）；换绑邮箱须新邮箱验证码（purpose=rebind）；忘记密码走邮件一次性重置链接（30 分钟、一次性）；通知邮件受「邮件提醒」总开关 `emailNoticeEnabled` 约束（默认关），邮件内附一键退订链接（token 180 天有效）。邮件验证码与链接 token 均一次性消费。
-    - **软删除与 purge**：文章 / 公告 / 资源 / 评论（讨论回复）的 DELETE 为软删（置 `deleted_at`）进回收站，可经 `POST /admin/trash/{type}/{id}/restore` 还原；软删期间列表/详情/搜索/tag 过滤/tag 计数均排除软删行（详情 404），`taggings` 保留、恢复后完整可见；重复恢复返回 409。剔除学员为硬删 purge（单事务）：连同名下文章/公告/资料/作业（含回收站软删行）一并硬删，级联其 issues/replies/提交，已有他人提交的作业改派给操作者（不连带删他人提交）。
+    - **软删除与 purge**：文章 / 公告 / 资源 / 讨论（issue）/ 作业 / 评论（讨论回复）的 DELETE 为软删（置 `deleted_at`）进回收站，可经 `POST /admin/trash/{type}/{id}/restore` 还原；软删期间列表/详情/搜索/tag 过滤/tag 计数均排除软删行（详情 404），`taggings` 与提交/回复保留（随所属讨论/作业一并隐藏、恢复一并回来），恢复后完整可见；重复恢复返回 409。剔除学员为硬删 purge（单事务）：连同名下文章/公告/资料/作业（含回收站软删行）一并硬删，级联其 issues/replies/提交，已有他人提交的作业改派给操作者（不连带删他人提交）。
     - **个人字段信封加密（v10.0）**：`email` / `phone` / `bio` / `company` / `location` / `link` / `socials` / `profileReadme` 库内为 AES-256-GCM 信封密文（配 `email_hmac` / `phone_hmac` 精确查找列）。**API 契约不变——请求/响应仍为明文**，加解密仅在服务端内部完成，本文件所有接口语义不受影响。后台用户 keyword 模糊搜只搜昵称/用户名（密文不可模糊检索）。
     - **文件上传**（头像、作业提交共用规则）：扩展名 + mime 双校验，白名单 `doc docx pdf png jpg jpeg zip`，单文件 ≤10MB（`UPLOAD_MAX_SIZE` 可配）；存储 key 为 UUID + 扩展名，文件 URL 一律经受控接口（bucket 不开放公共访问）。
     - **资源地址**：创建、更新只允许带协议的 HTTP / HTTPS 链接，FTP 等其他协议返回 400。
@@ -803,6 +803,7 @@ paths:
 
         - `pinnedItems` ≤6 项、不得重复、目标必须存在且**属于本人**（否则 400）；`[]` 清空。
         - `company` / `location` ≤100、`link` ≤200、`socials` ≤4 条且每条 ≤200（空串条目自动剔除）；链接宽松校验（可裸域名，展示时前端补 `https://`）。
+        - `skillTags` 擅长标签 ≤10 个、每个 ≤30 字符（统一标签系统归一：小写、去重）；`[]` 清空，省略不动。
         - v10.0：`bio` / `profileReadme` / `company` / `location` / `link` / `socials` 库内信封加密，接口明文。
         - 失败：400 超长/超量/重复/不属于本人；404 用户不存在。
       requestBody:
@@ -822,6 +823,9 @@ paths:
               link: example.com
               socials:
                 - https://github.com/xiaoming
+              skillTags:
+                - python
+                - vue
       responses:
         '200':
           description: 更新成功（空响应体）
@@ -1007,7 +1011,7 @@ paths:
         🔐 登录（`VISITOR` 仅可访问**本人**主页，访问他人 403）。`:id` 可传 uuid 或 username。
 
         - 返回 UserProfileView（含 v9.0 公开资料字段 company / location / link / socials）。
-        - `stats` 聚合计数不含软删行；`topTags` 至多 10 项；`pinnedItems` 仅保留仍存在且未软删的目标。
+        - `stats` 聚合计数不含软删行；`skillTags` 为本人自配置擅长标签（≤10 项，空数组 = 未配置）；`pinnedItems` 仅保留仍存在且未软删的目标。
         - `email` / `phone` 仅 isSelf 时返回（库内信封密文，接口明文）。
       parameters:
         - $ref: '#/components/parameters/UserRefParam'
@@ -1825,6 +1829,37 @@ paths:
                 timestamp: '2026-11-09T03:04:10.212Z'
         '404':
           $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [作业]
+      summary: 删除作业
+      operationId: assignmentsRemove
+      description: |
+        🛡️ 角色：仅 `WHEEL`、`ADMIN`（删除任意作业）。**仅 uuid 寻址**，传 slug 返回 400。
+
+        - 软删除（置 `deleted_at`）进后台回收站，可经 `POST /admin/trash/ASSIGNMENT/{id}/restore` 还原。
+        - 不连带删提交；软删期间作业与提交一并隐藏（详情 404、列表/我的提交不出现），恢复后完整可见。
+        - 失败：403 非负责人/管理员；404 作业不存在或已删除。
+      parameters:
+        - $ref: '#/components/parameters/ContentIdUuidParam'
+      responses:
+        '204':
+          description: 已软删除（空响应体）
+        '400':
+          description: '传入 slug（写接口仅接受 uuid）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '非负责人/管理员'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /assignments/{id}/submissions:
     get:
       tags: [作业]
@@ -2055,6 +2090,37 @@ paths:
                 $ref: '#/components/schemas/IssueDetail'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [讨论]
+      summary: 删除 Issue
+      operationId: issuesRemove
+      description: |
+        🛡️ 角色：仅 `WHEEL`、`ADMIN`（删除任意讨论）。**仅 uuid 寻址**，传 slug 返回 400。
+
+        - 软删除（置 `deleted_at`）进后台回收站，可经 `POST /admin/trash/ISSUE/{id}/restore` 还原。
+        - 回复随讨论一并隐藏（软删回复保留），恢复后完整可见。
+        - 失败：403 非负责人/管理员；404 讨论不存在或已删除。
+      parameters:
+        - $ref: '#/components/parameters/ContentIdUuidParam'
+      responses:
+        '204':
+          description: 已软删除（空响应体）
+        '400':
+          description: '传入 slug（写接口仅接受 uuid）'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: '非负责人/管理员'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '404':
           $ref: '#/components/responses/NotFound'
   /issues/{id}/replies:
@@ -3021,7 +3087,7 @@ paths:
       description: |
         🛡️ 角色：`WHEEL`、`ADMIN`。分页返回软删条目（文章/公告/资源/评论）。
 
-        - `type` 可选（`ARTICLE | ANNOUNCEMENT | RESOURCE | COMMENT`，大小写不敏感）；不传则四类合并按 `deletedAt` desc 分页。
+        - `type` 可选（`ARTICLE | ANNOUNCEMENT | RESOURCE | ISSUE | ASSIGNMENT | COMMENT`，大小写不敏感）；不传则六类合并按 `deletedAt` desc 分页。
         - `original` 为删除时刻关键字段快照（还原依据）；审计 detail 保留删除前快照（标题/正文前 200 字）。
       parameters:
         - $ref: '#/components/parameters/PageParam'
@@ -3051,9 +3117,9 @@ paths:
       summary: 还原回收站条目
       operationId: adminRestoreTrash
       description: |
-        🛡️ 角色：`WHEEL`、`ADMIN`。还原软删条目，写入审计 `article.restore` / `announcement.restore` / `resource.restore` / `comment.restore`。
+        🛡️ 角色：`WHEEL`、`ADMIN`。还原软删条目，写入审计 `article.restore` / `announcement.restore` / `resource.restore` / `issue.restore` / `assignment.restore` / `comment.restore`。
 
-        - `type` = `ARTICLE | ANNOUNCEMENT | RESOURCE | COMMENT`（大小写不敏感）。
+        - `type` = `ARTICLE | ANNOUNCEMENT | RESOURCE | ISSUE | ASSIGNMENT | COMMENT`（大小写不敏感）。
         - 还原后完整可见（taggings 保留）。**重复恢复返回 409，非幂等 204**。
         - 失败：404 条目不存在；409 内容未被删除，无需恢复。
       parameters:
@@ -3760,7 +3826,7 @@ components:
       description: |
         个人主页视图。company / location / link / socials 为 v9.0 公开资料字段（对齐 GitHub 语义，公开可见）；
         email / phone 仅 isSelf 时返回（v10.0 库内信封密文、接口明文）。
-      required: [id, username, nickname, avatarUrl, role, bio, profileReadme, company, location, link, socials, createdAt, stats, topTags, pinnedItems, isSelf, isFollowing, followerCount, followingCount]
+      required: [id, username, nickname, avatarUrl, role, bio, profileReadme, company, location, link, socials, createdAt, stats, skillTags, pinnedItems, isSelf, isFollowing, followerCount, followingCount]
       properties:
         id:
           type: string
@@ -3803,17 +3869,13 @@ components:
           format: date-time
         stats:
           $ref: '#/components/schemas/ProfileStats'
-        topTags:
+        skillTags:
           type: array
           maxItems: 10
           items:
-            type: object
-            required: [name, count]
-            properties:
-              name:
-                type: string
-              count:
-                type: integer
+            type: string
+            maxLength: 30
+          description: 擅长标签（本人自配置，统一标签系统小写归一；空数组 = 未配置）
         pinnedItems:
           type: array
           maxItems: 6
@@ -4349,7 +4411,7 @@ components:
     TrashType:
       type: string
       description: 软删类型（接口按大小写不敏感解析）
-      enum: [ARTICLE, ANNOUNCEMENT, RESOURCE, COMMENT]
+      enum: [ARTICLE, ANNOUNCEMENT, RESOURCE, ISSUE, ASSIGNMENT, COMMENT]
     TrashItem:
       type: object
       description: 回收站条目（软删内容，可还原）
@@ -4931,6 +4993,13 @@ components:
             type: string
             maxLength: 200
           description: ≤4 条、每条 ≤200（空串条目自动剔除）
+        skillTags:
+          type: array
+          maxItems: 10
+          items:
+            type: string
+            maxLength: 30
+          description: 擅长标签 ≤10 个、每个 ≤30 字符（统一标签系统归一：小写、去重，空串条目剔除）；[] 清空
     CreateArticleRequest:
       type: object
       description: 创建文章请求（MEMBER 创建即 PENDING 待审；其余角色创建即 PUBLISHED）

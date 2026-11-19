@@ -9,12 +9,13 @@ import { CryptoService } from '../../common/crypto/crypto.service';
 import { isUuid, USERNAME_RE, uniqueUsername } from '../../common/utils/identifiers';
 import { requireRole } from '../../common/permissions';
 import { REFRESH_TOKEN_STORE, RefreshTokenStore } from '../../db/redis';
-import { UserStatus } from '../../db/schema';
+import { TagTargetType, UserStatus } from '../../db/schema';
 import { AuditLogService } from '../audit/audit-log.service';
 import { CaptchaService } from '../captcha/captcha.service';
 import { EmailCodeService } from '../mail/email-code.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UploadsService, UploadedFileInput } from '../storage/uploads.service';
+import { TagsService } from '../tags/tags.service';
 import { ChangeIdentifierDto } from './dto/change-identifier.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ActivityParts, PinnedTarget, UsersRepository, UserRow } from './users.repository';
@@ -54,6 +55,7 @@ export class UsersService {
     private readonly auditLogService: AuditLogService,
     private readonly captchaService: CaptchaService,
     private readonly emailCodeService: EmailCodeService,
+    private readonly tagsService: TagsService,
     @Inject(REFRESH_TOKEN_STORE) private readonly refreshStore: RefreshTokenStore,
   ) {}
 
@@ -700,13 +702,15 @@ export class UsersService {
       throw new ForbiddenException('无权访问该资源');
     }
 
-    const [stats, topTags, targets, followCounts, isFollowing] = await Promise.all([
+    // 擅长标签：用户自配置（USER 类 taggings），未配置返回空数组
+    const [stats, skillTagMap, targets, followCounts, isFollowing] = await Promise.all([
       this.usersRepository.getProfileStats(row.id),
-      this.usersRepository.getProfileTopTags(row.id, 10),
+      this.tagsService.getNamesByTargets(TagTargetType.USER, [row.id]),
       this.usersRepository.findPinnedTargets(row.pinnedItems ?? []),
       this.usersRepository.getFollowCounts(row.id),
       isSelf ? Promise.resolve(false) : this.usersRepository.isFollowing(viewer.id, row.id),
     ]);
+    const skillTags = skillTagMap.get(row.id) ?? [];
 
     const targetByKey = new Map(targets.map((t) => [`${t.type}:${t.id}`, t]));
     const pinnedItems = (row.pinnedItems ?? [])
@@ -730,7 +734,7 @@ export class UsersService {
         .filter((item): item is string => item !== null),
       createdAt: row.createdAt.toISOString(),
       stats,
-      topTags,
+      skillTags,
       pinnedItems,
       isSelf,
       isFollowing,
@@ -756,6 +760,7 @@ export class UsersService {
       location?: string | null;
       link?: string | null;
       socials?: string[] | null;
+      skillTags?: string[] | null;
     },
   ): Promise<void> {
     if (dto.bio !== undefined && dto.bio !== null && dto.bio.length > 100) {
@@ -784,6 +789,11 @@ export class UsersService {
         }
       }
     }
+    // 擅长标签（个人主页自配置）：≤10 个；单标签长度/空值/去重归一由 TagsService 校验
+    if (dto.skillTags !== undefined && dto.skillTags !== null && dto.skillTags.length > 10) {
+      throw new BadRequestException('擅长标签最多 10 个');
+    }
+    const skillTagNames = dto.skillTags === undefined ? undefined : this.tagsService.normalizeTags(dto.skillTags ?? []);
     if (dto.pinnedItems !== undefined) {
       if (dto.pinnedItems.length > 6) {
         throw new BadRequestException('置顶内容不能超过 6 项');
@@ -826,6 +836,10 @@ export class UsersService {
       }, tx);
       if (!updated) {
         throw new NotFoundException('用户不存在');
+      }
+      // 擅长标签：与资料同事务同步（[] 清空，undefined 不动）
+      if (skillTagNames !== undefined) {
+        await this.tagsService.syncTags(TagTargetType.USER, userId, skillTagNames, tx);
       }
     });
   }

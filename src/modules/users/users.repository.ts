@@ -13,7 +13,6 @@ import {
   issues,
   resources,
   taggings,
-  tags,
   userFollows,
   userUsernameHistory,
   UserStatus,
@@ -397,6 +396,8 @@ export class UsersRepository {
             eq(taggings.targetType, 'RESOURCE'),
             inArray(taggings.targetId, tx.select({ id: resources.id }).from(resources).where(eq(resources.creatorId, id))),
           ),
+          // 擅长标签（USER）：targetId 即用户 id
+          and(eq(taggings.targetType, 'USER'), eq(taggings.targetId, id)),
         ),
       );
 
@@ -645,53 +646,6 @@ export class UsersRepository {
       replies: replyCount[0]?.count ?? 0,
       submissions: submissionCount[0]?.count ?? 0,
     };
-  }
-
-  async getProfileTopTags(userId: string, limit = 10): Promise<{ name: string; count: number }[]> {
-    const articleIds = db.select({ id: articles.id }).from(articles)
-      .where(and(eq(articles.authorId, userId), isNull(articles.deletedAt), eq(articles.status, 'PUBLISHED')));
-    const issueIds = db.select({ id: issues.id }).from(issues).where(eq(issues.authorId, userId));
-    const resourceIds = db.select({ id: resources.id }).from(resources).where(and(eq(resources.creatorId, userId), isNull(resources.deletedAt)));
-
-    const rows = await db
-      .select({ name: tags.name, count: sql<number>`count(*)::int` })
-      .from(taggings)
-      .innerJoin(tags, eq(tags.id, taggings.tagId))
-      .where(and(inArray(taggings.targetId, articleIds), eq(taggings.targetType, 'ARTICLE')))
-      .groupBy(tags.name);
-
-    const issueTagRows = await db
-      .select({ name: tags.name, count: sql<number>`count(*)::int` })
-      .from(taggings)
-      .innerJoin(tags, eq(tags.id, taggings.tagId))
-      .where(and(inArray(taggings.targetId, issueIds), eq(taggings.targetType, 'ISSUE')))
-      .groupBy(tags.name);
-
-    const resourceTagRows = await db
-      .select({ name: tags.name, count: sql<number>`count(*)::int` })
-      .from(taggings)
-      .innerJoin(tags, eq(tags.id, taggings.tagId))
-      .where(and(inArray(taggings.targetId, resourceIds), eq(taggings.targetType, 'RESOURCE')))
-      .groupBy(tags.name);
-
-    const merged = new Map<string, number>();
-    for (const r of rows) {
-      const prev = merged.get(r.name) || 0;
-      merged.set(r.name, prev + r.count);
-    }
-    for (const r of issueTagRows) {
-      const prev = merged.get(r.name) || 0;
-      merged.set(r.name, prev + r.count);
-    }
-    for (const r of resourceTagRows) {
-      const prev = merged.get(r.name) || 0;
-      merged.set(r.name, prev + r.count);
-    }
-
-    return [...merged.entries()]
-      .map(([name, count]) => ({ name, count }))
-      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
-      .slice(0, limit);
   }
 
   /** 五类事件按 UTC 日聚合（软删不计），按类型分开返回，合并口径在 service 层 */

@@ -17,6 +17,8 @@ export const assignments = pgTable(
       .references(() => users.id, { onDelete: 'restrict' }),
     startAt: timestamp('start_at', { withTimezone: true }).notNull(),
     deadlineAt: timestamp('deadline_at', { withTimezone: true }).notNull(),
+    // 业务软删除（WHEEL/ADMIN 删作业）：置 deleted_at 进回收站可恢复，不连带删提交；FK 级联仍为硬删
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()
@@ -27,6 +29,7 @@ export const assignments = pgTable(
     index('assignments_publisher_id_idx').on(t.publisherId),
     index('assignments_start_at_idx').on(t.startAt),
     index('assignments_deadline_at_idx').on(t.deadlineAt),
+    index('assignments_deleted_at_idx').on(t.deletedAt),
     uniqueIndex('assignments_slug_key').on(t.slug),
   ],
 );

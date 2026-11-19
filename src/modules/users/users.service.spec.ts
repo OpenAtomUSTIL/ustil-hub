@@ -20,6 +20,8 @@ import { EmailCodeService } from '../mail/email-code.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UploadsService } from '../storage/uploads.service';
 import { hashPassword } from '../auth/password';
+import { TagsRepository } from '../tags/tags.repository';
+import { TagsService } from '../tags/tags.service';
 import { UpdateProfilePageDto } from './dto/update-profile-page.dto';
 import { UsersRepository, UserRow } from './users.repository';
 import { UsersService, computeStreak } from './users.service';
@@ -95,7 +97,6 @@ describe('UsersService', () => {
     listExpiredVisitorIds: jest.fn(),
     promoteMembersCreatedBefore: jest.fn(),
     getProfileStats: jest.fn(),
-    getProfileTopTags: jest.fn(),
     findPinnedTargets: jest.fn(),
     updateProfilePage: jest.fn(),
     getActivityParts: jest.fn(),
@@ -122,7 +123,14 @@ describe('UsersService', () => {
   const auditLogService = {
     record: jest.fn(),
   };
-  // v8.0：剔除 purge 并入 deleteById 事务，UsersService 不再依赖 TagsService
+  // 擅长标签（个人主页自配置）：TagsService 走真实实现（normalize 归一化），仓库打桩
+  const tagsRepository = {
+    listWithCounts: jest.fn(),
+    findTargetIds: jest.fn(),
+    findNamesByTargets: jest.fn(),
+    syncTaggings: jest.fn(),
+    deleteTaggings: jest.fn(),
+  };
   // v6.0：changeIdentifier 起手先过图形验证码，单测直接打桩放行
   const captchaService = {
     validate: jest.fn(),
@@ -161,6 +169,8 @@ describe('UsersService', () => {
         { provide: AuditLogService, useValue: auditLogService },
         { provide: CaptchaService, useValue: captchaService },
         { provide: EmailCodeService, useValue: emailCodeService },
+        TagsService,
+        { provide: TagsRepository, useValue: tagsRepository },
         { provide: REFRESH_TOKEN_STORE, useValue: refreshStore },
       ],
     }).compile();
@@ -530,7 +540,10 @@ describe('UsersService', () => {
       replies: 3,
       submissions: 4,
     });
-    usersRepository.getProfileTopTags.mockResolvedValue([{ name: 'vue', count: 5 }]);
+    // 擅长标签：自配置 USER taggings（key = 用户 id）
+    tagsRepository.findNamesByTargets.mockResolvedValue(
+      new Map([['01890a5d-ac96-7000-8000-000000000001', ['vue']]]),
+    );
     usersRepository.findPinnedTargets.mockResolvedValue([]);
   }
 
@@ -545,6 +558,7 @@ describe('UsersService', () => {
     expect(result.phone).toBe('13800000000');
     expect(result.bio).toBe('hi');
     expect(result.stats).toEqual({ articles: 1, issues: 2, replies: 3, submissions: 4 });
+    expect(result.skillTags).toEqual(['vue']);
   });
 
   it('个人主页：MEMBER 互访只见公开资料，不带联系方式', async () => {
@@ -643,6 +657,36 @@ describe('UsersService', () => {
       link: 'v1.test.geminimortal.cn',
       socials: ['v1.test.https://github.com/GeminiMortal', null],
     }, transaction);
+  });
+
+  it('更新主页：擅长标签归一化后同步 USER taggings（正常路径）', async () => {
+    usersRepository.findById.mockResolvedValue(row());
+    usersRepository.updateProfilePage.mockResolvedValue(row());
+
+    await service.updateProfilePage('01890a5d-ac96-7000-8000-000000000001', {
+      skillTags: [' Vue ', 'vue', 'React'],
+    });
+
+    // 小写归一 + 大小写不敏感去重（同统一标签系统口径）
+    expect(tagsRepository.syncTaggings).toHaveBeenCalledWith(
+      'USER',
+      '01890a5d-ac96-7000-8000-000000000001',
+      ['vue', 'react'],
+      transaction,
+    );
+  });
+
+  it('更新主页：擅长标签超 10 个或空标签返回 400（失败路径）', async () => {
+    await expect(
+      service.updateProfilePage('01890a5d-ac96-7000-8000-000000000001', {
+        skillTags: Array.from({ length: 11 }, (_, i) => `tag-${i}`),
+      }),
+    ).rejects.toThrow(BadRequestException);
+    await expect(
+      service.updateProfilePage('01890a5d-ac96-7000-8000-000000000001', { skillTags: [' '] }),
+    ).rejects.toThrow(BadRequestException);
+    expect(usersRepository.updateProfilePage).not.toHaveBeenCalled();
+    expect(tagsRepository.syncTaggings).not.toHaveBeenCalled();
   });
 
   it('置顶：超过 6 项或重复返回 400', async () => {
@@ -1055,7 +1099,7 @@ describe('用户加密标识并发回归', () => {
       withUserLock: async (_id: string, fn: (row: UserRow, tx: typeof transaction) => Promise<unknown>) => fn({ ...live }, transaction),
       updateIdentifier: async (_id: string, patch: Partial<UserRow>) => Object.assign(live, patch),
     };
-    const service = new UsersService(repository as unknown as UsersRepository, crypto, {} as UploadsService, {} as NotificationsService, {} as AuditLogService, { validate: async () => {} } as unknown as CaptchaService, { validate: async () => {} } as unknown as EmailCodeService, {} as never);
+    const service = new UsersService(repository as unknown as UsersRepository, crypto, {} as UploadsService, {} as NotificationsService, {} as AuditLogService, { validate: async () => {} } as unknown as CaptchaService, { validate: async () => {} } as unknown as EmailCodeService, {} as TagsService, {} as never);
     await service.changeIdentifier(live.id, { type: 'email', value: 'new@example.com', password: 'Password123', captchaId: 'c', captchaCode: 'c' });
     expect(live.cryptoId).toBe(id);
     expect(crypto.open('profile', live.bio, id)).toBe('saved bio');
@@ -1077,7 +1121,7 @@ describe('用户加密标识并发回归', () => {
         return { ...live };
       },
     };
-    const service = new UsersService(repository as unknown as UsersRepository, crypto, {} as UploadsService, {} as NotificationsService, {} as AuditLogService, {} as CaptchaService, { validate: async () => {} } as unknown as EmailCodeService, {} as never);
+    const service = new UsersService(repository as unknown as UsersRepository, crypto, {} as UploadsService, {} as NotificationsService, {} as AuditLogService, {} as CaptchaService, { validate: async () => {} } as unknown as EmailCodeService, {} as TagsService, {} as never);
     await Promise.all([service.updateProfilePage(live.id, { bio: 'bio' }), service.updateProfilePage(live.id, { company: 'company' })]);
     expect(crypto.open('profile', live.bio, live.cryptoId!)).toBe('bio');
     expect(crypto.open('profile', live.company, live.cryptoId!)).toBe('company');

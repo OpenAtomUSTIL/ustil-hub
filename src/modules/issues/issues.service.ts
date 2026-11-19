@@ -234,6 +234,50 @@ export class IssuesService {
     return this.getDetail(id);
   }
 
+  // ===== 讨论软删除（WHEEL/ADMIN） =====
+
+  async softDeleteIssue(id: string, user: CurrentAuthUser): Promise<void> {
+    requireRole(user, Role.WHEEL, Role.ADMIN);
+    const row = await this.issuesRepository.findById(id);
+    if (!row) {
+      throw new NotFoundException('问题不存在');
+    }
+    await this.issuesRepository.softDeleteIssue(id);
+    await this.auditLogService.record({
+      actor: user,
+      action: 'issue.delete',
+      targetType: 'ISSUE',
+      targetId: id,
+      detail: { title: row.title },
+    });
+  }
+
+  async listDeletedIssues(
+    page: number,
+    pageSize: number,
+  ): Promise<{ rows: IssueRow[]; total: number }> {
+    return this.issuesRepository.listDeletedIssues(page, pageSize);
+  }
+
+  async restoreIssue(id: string, user: CurrentAuthUser): Promise<void> {
+    requireRole(user, Role.WHEEL, Role.ADMIN);
+    const row = await this.issuesRepository.findWithDeletedById(id);
+    if (!row) {
+      throw new NotFoundException('问题不存在');
+    }
+    if (!row.deletedAt) {
+      throw new ConflictException('内容未被删除，无需恢复');
+    }
+    await this.issuesRepository.restoreIssue(id);
+    await this.auditLogService.record({
+      actor: user,
+      action: 'issue.restore',
+      targetType: 'ISSUE',
+      targetId: id,
+      detail: { title: row.title },
+    });
+  }
+
   // ===== 管理端评论（讨论回复） =====
 
   private toCommentItem(row: ReplyWithIssueRow, authorName: string): CommentItem {

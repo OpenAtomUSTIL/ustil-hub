@@ -62,4 +62,19 @@ export class UpdateProfilePageDto {
   @IsString({ each: true, message: '社交账户链接必须是字符串' })
   @MaxLength(200, { each: true, message: '社交账户链接不能超过 200 个字符' })
   socials?: string[] | null;
+
+  // 擅长标签（个人主页自配置）：≤10 个、每个 ≤30 字符；归一化（小写/去重）在 TagsService，[] 清空
+  @Transform(({ value }: { value: unknown }) =>
+    Array.isArray(value)
+      ? value
+          .map((item) => (typeof item === 'string' ? item.trim() : item))
+          .filter((item) => typeof item !== 'string' || item.length > 0)
+      : value,
+  )
+  @IsOptional()
+  @IsArray({ message: '擅长标签必须是数组' })
+  @ArrayMaxSize(10, { message: '擅长标签最多 10 个' })
+  @IsString({ each: true, message: '擅长标签必须是字符串' })
+  @MaxLength(30, { each: true, message: '擅长标签不能超过 30 个字符' })
+  skillTags?: string[] | null;
 }

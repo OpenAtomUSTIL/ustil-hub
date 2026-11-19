@@ -1,4 +1,4 @@
-import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { Role } from '../../common/decorators/roles.decorator';
 import { AuditLogService } from '../audit/audit-log.service';
@@ -68,6 +68,10 @@ describe('AssignmentsService', () => {
     upsertSubmission: jest.fn(),
     listSubmissions: jest.fn(),
     listBySubmitter: jest.fn(),
+    softDeleteAssignment: jest.fn(),
+    findWithDeletedById: jest.fn(),
+    listDeletedAssignments: jest.fn(),
+    restoreAssignment: jest.fn(),
   };
   const usersService = {
     getPublicByIds: jest.fn(),
@@ -315,6 +319,67 @@ describe('AssignmentsService', () => {
     assignmentsRepository.findMySubmissions.mockResolvedValue([submissionRow()]);
     uploadsService.getAttachmentViews.mockResolvedValue(new Map());
     await expect(service.list({ page: 1, pageSize: 20 }, { id: '01890a5d-ac96-7000-8000-000000000002', role: Role.MEMBER })).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('WHEEL 软删作业并写 assignment.delete 审计；MEMBER 无权返回 403（正常 + 失败路径）', async () => {
+    assignmentsRepository.findById.mockResolvedValue(assignmentRow());
+
+    await service.softDeleteAssignment('01890a5d-ac96-7000-8000-0000000000b1', {
+      id: 'wheel-1',
+      role: Role.WHEEL,
+    });
+    expect(assignmentsRepository.softDeleteAssignment).toHaveBeenCalledWith(
+      '01890a5d-ac96-7000-8000-0000000000b1',
+    );
+    expect(auditLogService.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'assignment.delete',
+        targetType: 'ASSIGNMENT',
+        targetId: '01890a5d-ac96-7000-8000-0000000000b1',
+        detail: { title: '作业一' },
+      }),
+    );
+
+    await expect(
+      service.softDeleteAssignment('01890a5d-ac96-7000-8000-0000000000b1', {
+        id: 'member-1',
+        role: Role.MEMBER,
+      }),
+    ).rejects.toThrow(ForbiddenException);
+    expect(assignmentsRepository.softDeleteAssignment).toHaveBeenCalledTimes(1);
+
+    // 已删/不存在（findById 已滤软删行）→ 404
+    assignmentsRepository.findById.mockResolvedValue(null);
+    await expect(
+      service.softDeleteAssignment('01890a5d-ac96-7000-8000-0000000000b1', {
+        id: 'wheel-1',
+        role: Role.WHEEL,
+      }),
+    ).rejects.toThrow(NotFoundException);
+  });
+
+  it('恢复作业：写 assignment.restore 审计；未删返回 409（正常 + 失败路径）', async () => {
+    assignmentsRepository.findWithDeletedById.mockResolvedValue(assignmentRow({ deletedAt: now }));
+
+    await service.restoreAssignment('01890a5d-ac96-7000-8000-0000000000b1', {
+      id: 'wheel-1',
+      role: Role.WHEEL,
+    });
+    expect(assignmentsRepository.restoreAssignment).toHaveBeenCalledWith(
+      '01890a5d-ac96-7000-8000-0000000000b1',
+    );
+    expect(auditLogService.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'assignment.restore', targetType: 'ASSIGNMENT' }),
+    );
+
+    assignmentsRepository.findWithDeletedById.mockResolvedValue(assignmentRow());
+    await expect(
+      service.restoreAssignment('01890a5d-ac96-7000-8000-0000000000b1', {
+        id: 'wheel-1',
+        role: Role.WHEEL,
+      }),
+    ).rejects.toThrow(ConflictException);
+    expect(assignmentsRepository.restoreAssignment).toHaveBeenCalledTimes(1);
   });
 
 });

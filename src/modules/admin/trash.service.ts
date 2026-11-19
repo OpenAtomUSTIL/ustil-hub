@@ -7,6 +7,9 @@ import { AnnouncementRow } from '../announcements/announcements.repository';
 import { AnnouncementsService } from '../announcements/announcements.service';
 import { ArticleRow } from '../articles/articles.repository';
 import { ArticlesService } from '../articles/articles.service';
+import { AssignmentRow } from '../assignments/assignments.repository';
+import { AssignmentsService } from '../assignments/assignments.service';
+import { IssueRow } from '../issues/issues.repository';
 import { DeletedReplySnapshot } from '../issues/issues.views';
 import { IssuesService } from '../issues/issues.service';
 import { ResourceRow } from '../resources/resources.repository';
@@ -23,6 +26,7 @@ export class TrashService {
     private readonly announcementsService: AnnouncementsService,
     private readonly resourcesService: ResourcesService,
     private readonly issuesService: IssuesService,
+    private readonly assignmentsService: AssignmentsService,
   ) {}
 
   private excerpt(content: string): string {
@@ -101,6 +105,47 @@ export class TrashService {
     };
   }
 
+  private issueItem(row: IssueRow): TrashItem {
+    return {
+      id: row.id,
+      type: 'ISSUE',
+      title: row.title,
+      summary: this.excerpt(row.content),
+      deletedAt: (row.deletedAt as Date).toISOString(),
+      original: {
+        title: row.title,
+        slug: row.slug,
+        content: row.content,
+        authorId: row.authorId,
+        status: row.status,
+        answeredBy: row.answeredBy,
+        answeredAt: row.answeredAt ? row.answeredAt.toISOString() : null,
+        createdAt: row.createdAt.toISOString(),
+        updatedAt: row.updatedAt.toISOString(),
+      },
+    };
+  }
+
+  private assignmentItem(row: AssignmentRow): TrashItem {
+    return {
+      id: row.id,
+      type: 'ASSIGNMENT',
+      title: row.title,
+      summary: this.excerpt(row.description),
+      deletedAt: (row.deletedAt as Date).toISOString(),
+      original: {
+        title: row.title,
+        slug: row.slug,
+        description: row.description,
+        publisherId: row.publisherId,
+        startAt: row.startAt.toISOString(),
+        deadlineAt: row.deadlineAt.toISOString(),
+        createdAt: row.createdAt.toISOString(),
+        updatedAt: row.updatedAt.toISOString(),
+      },
+    };
+  }
+
   private async listSingleType(
     type: TrashType,
     page: number,
@@ -119,6 +164,14 @@ export class TrashService {
         const { rows, total } = await this.resourcesService.listDeleted(page, pageSize);
         return { items: rows.map((row) => this.resourceItem(row)), total };
       }
+      case 'ISSUE': {
+        const { rows, total } = await this.issuesService.listDeletedIssues(page, pageSize);
+        return { items: rows.map((row) => this.issueItem(row)), total };
+      }
+      case 'ASSIGNMENT': {
+        const { rows, total } = await this.assignmentsService.listDeletedAssignments(page, pageSize);
+        return { items: rows.map((row) => this.assignmentItem(row)), total };
+      }
       case 'COMMENT': {
         const { rows, total } = await this.issuesService.listDeletedReplies(page, pageSize);
         return { items: rows.map((row) => this.commentItem(row)), total };
@@ -132,7 +185,7 @@ export class TrashService {
       const { items, total } = await this.listSingleType(query.type, query.page, query.pageSize);
       return { items, total, page: query.page, pageSize: query.pageSize };
     }
-    // 不带 type：四类合并按 deletedAt desc 分页（各源取窗口后归并）
+    // 不带 type：六类合并按 deletedAt desc 分页（各源取窗口后归并）
     const offset = (query.page - 1) * query.pageSize;
     const windowSize = offset + query.pageSize;
     const perType = await Promise.all(
@@ -155,6 +208,10 @@ export class TrashService {
         return this.announcementsService.restore(id, actor);
       case 'RESOURCE':
         return this.resourcesService.restore(id, actor);
+      case 'ISSUE':
+        return this.issuesService.restoreIssue(id, actor);
+      case 'ASSIGNMENT':
+        return this.assignmentsService.restoreAssignment(id, actor);
       case 'COMMENT':
         return this.issuesService.restoreReply(id, actor);
     }

@@ -59,7 +59,7 @@
 | `VISITOR` | 临时访客 | 非邀请码注册；7 天内未持码转正自动删号；可读内容、讨论仅回复；**禁止查阅/提交作业** |
 | `MEMBER` | 学习成员 | 持邀请码注册；发起讨论、提交作业；注册满 4 年自动升 `ALUMNI`（或被提前提拔） |
 | `ALUMNI` | 校友 | 发文章、布置作业、答疑、参与作业；无管理权 |
-| `WHEEL` | 负责人 | 邀请码管理、剔除学员、提前提拔、发布内容、变更 issue 状态 |
+| `WHEEL` | 负责人 | 邀请码管理、剔除学员、提前提拔、发布内容、变更 issue 状态、删除讨论/作业（软删） |
 | `ADMIN` | 管理员 | 任免 `WHEEL`、封禁、删他人内容、最高权限；`ADMIN` 账号本身不可被改角色/删除/封禁 |
 
 ### 权限标注图例
@@ -313,10 +313,11 @@ TagView = { id: string; name: string; count: number }
     "company": "公司/学校，≤100 字符",
     "location": "所在地，≤100 字符",
     "link": "个人链接，≤200 字符，可裸域名",
-    "socials": [ "社交账户链接，≤4 条、每条 ≤200 字符" ]
+    "socials": [ "社交账户链接，≤4 条、每条 ≤200 字符" ],
+    "skillTags": [ "擅长标签，≤10 个、每个 ≤30 字符" ]
   }
   ```
-- 约束：`pinnedItems` ≤6 项、不得重复、目标必须存在且**属于本人**（否则 400）；省略表示不动，`[]` 清空；`company`/`location` ≤100、`link` ≤200、`socials` ≤4 条且每条 ≤200（空串条目自动剔除），链接宽松校验（可裸域名，展示时前端补 `https://`）
+- 约束：`pinnedItems` ≤6 项、不得重复、目标必须存在且**属于本人**（否则 400）；省略表示不动，`[]` 清空；`company`/`location` ≤100、`link` ≤200、`socials` ≤4 条且每条 ≤200（空串条目自动剔除），链接宽松校验（可裸域名，展示时前端补 `https://`）；`skillTags` ≤10 个、每个 ≤30 字符（统一标签系统归一：小写、大小写不敏感去重，空串条目剔除），省略表示不动、`[]` 清空
 - 成功：`200`（空响应）
 - 失败：`400` 超长/超量/重复/不属于本人；`404` 用户不存在
 
@@ -367,7 +368,7 @@ TagView = { id: string; name: string; count: number }
     socials: string[],
     createdAt,
     stats: { articles, issues, replies, submissions },   // 聚合计数（软删不计）
-    topTags: { name: string, count: number }[],          // 至多 10 项
+    skillTags: string[],                                 // 擅长标签（本人自配置，≤10 项；空数组 = 未配置）
     pinnedItems: { type, id, slug, title, url? }[],      // 仅保留仍存在且未软删的目标
     isSelf: boolean,
     isFollowing: boolean,
@@ -646,6 +647,12 @@ TagView = { id: string; name: string; count: number }
 - 成功：`200`，返回 `Page<SubmissionView>`
 - 失败：`403` 非发布者且非管理员
 
+### 4.9 删除作业 `DELETE /api/v1/assignments/:id`
+
+- 权限：🛡️ 仅 `WHEEL`、`ADMIN`（任意作业，仅 uuid 寻址）
+- 成功：`204`（软删进回收站，可经 11.12 还原；不连带删提交，软删期间作业与提交一并隐藏）
+- 失败：`403` 非负责人/管理员；`404` 作业不存在或已删除
+
 ---
 
 ## 5. 讨论 Issue `/api/v1/issues`
@@ -696,6 +703,12 @@ TagView = { id: string; name: string; count: number }
 - 权限：🛡️ 仅 `ADMIN`、`ALUMNI`、`WHEEL`
 - 请求体：`{ "status": "OPEN | ANSWERED | ON_HOLD" }`
 - 成功：`200`，返回 `IssueDetail`
+
+### 5.6 删除 Issue `DELETE /api/v1/issues/:id`
+
+- 权限：🛡️ 仅 `WHEEL`、`ADMIN`（任意讨论，仅 uuid 寻址）
+- 成功：`204`（软删进回收站，可经 11.12 还原；回复随讨论一并隐藏，恢复一并回来）
+- 失败：`403` 非负责人/管理员；`404` 讨论不存在或已删除
 
 ---
 
@@ -980,13 +993,13 @@ TagView = { id: string; name: string; count: number }
 ### 11.11 回收站列表 `GET /api/v1/admin/trash`
 
 - 权限：🛡️ `WHEEL`、`ADMIN`
-- 查询参数：`page`、`pageSize`、`type`（`ARTICLE | ANNOUNCEMENT | RESOURCE | COMMENT`，大小写不敏感）
-- 说明：`type` 可选；不传则四类合并按 `deletedAt` desc 分页
+- 查询参数：`page`、`pageSize`、`type`（`ARTICLE | ANNOUNCEMENT | RESOURCE | ISSUE | ASSIGNMENT | COMMENT`，大小写不敏感）
+- 说明：`type` 可选；不传则六类合并按 `deletedAt` desc 分页
 - 成功：`200`，返回 `Page<TrashItem>`
   ```ts
   TrashItem = {
     id,
-    type: 'ARTICLE' | 'ANNOUNCEMENT' | 'RESOURCE' | 'COMMENT',
+    type: 'ARTICLE' | 'ANNOUNCEMENT' | 'RESOURCE' | 'ISSUE' | 'ASSIGNMENT' | 'COMMENT',
     title, summary, deletedAt,
     original: object   // 删除时刻关键字段快照（还原依据）
   }
@@ -995,8 +1008,8 @@ TagView = { id: string; name: string; count: number }
 ### 11.12 还原回收站条目 `POST /api/v1/admin/trash/:type/:id/restore`
 
 - 权限：🛡️ `WHEEL`、`ADMIN`
-- 路径参数：`type` = `ARTICLE | ANNOUNCEMENT | RESOURCE | COMMENT`（大小写不敏感）
-- 成功：`204`，写入审计 `article.restore` / `announcement.restore` / `resource.restore` / `comment.restore`
+- 路径参数：`type` = `ARTICLE | ANNOUNCEMENT | RESOURCE | ISSUE | ASSIGNMENT | COMMENT`（大小写不敏感）
+- 成功：`204`，写入审计 `article.restore` / `announcement.restore` / `resource.restore` / `issue.restore` / `assignment.restore` / `comment.restore`
 - 失败：`404` 条目不存在；`409` 内容未被删除，无需恢复（重复恢复返回 409，非幂等 204）
 
 ### 11.13 评论列表 `GET /api/v1/admin/comments`

@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { db, type DatabaseTransaction } from '../../db';
 import { assignmentSubmissions, assignments } from '../../db/schema';
 import { isUuid } from '../../common/utils/identifiers';
@@ -10,18 +10,26 @@ export type SubmissionRow = typeof assignmentSubmissions.$inferSelect;
 @Injectable()
 export class AssignmentsRepository {
   async list(page: number, pageSize: number): Promise<{ rows: AssignmentRow[]; total: number }> {
+    // 软删作业不展示
+    const where = isNull(assignments.deletedAt);
     const rows = await db
       .select()
       .from(assignments)
+      .where(where)
       .orderBy(desc(assignments.createdAt))
       .limit(pageSize)
       .offset((page - 1) * pageSize);
-    const totalRows = await db.select({ count: sql<number>`count(*)::int` }).from(assignments);
+    const totalRows = await db.select({ count: sql<number>`count(*)::int` }).from(assignments).where(where);
     return { rows, total: totalRows[0]?.count ?? 0 };
   }
 
+  // 软删作业视为不存在（详情/提交/下载/查看提交统一 404）；回收站走 findWithDeletedById
   async findById(id: string): Promise<AssignmentRow | null> {
-    const rows = await db.select().from(assignments).where(eq(assignments.id, id)).limit(1);
+    const rows = await db
+      .select()
+      .from(assignments)
+      .where(and(eq(assignments.id, id), isNull(assignments.deletedAt)))
+      .limit(1);
     return rows[0] ?? null;
   }
 
@@ -35,7 +43,11 @@ export class AssignmentsRepository {
   }
 
   async findBySlug(slug: string): Promise<AssignmentRow | null> {
-    const rows = await db.select().from(assignments).where(eq(assignments.slug, slug)).limit(1);
+    const rows = await db
+      .select()
+      .from(assignments)
+      .where(and(eq(assignments.slug, slug), isNull(assignments.deletedAt)))
+      .limit(1);
     return rows[0] ?? null;
   }
 
@@ -167,13 +179,20 @@ export class AssignmentsRepository {
     return { rows, total: totalRows[0]?.count ?? 0 };
   }
 
-  // 我的提交：仅本人数据，按 updatedAt 倒序
+  // 我的提交：仅本人数据，按 updatedAt 倒序；软删作业的提交一并隐藏（恢复后回来）
   async listBySubmitter(
     submitterId: string,
     page: number,
     pageSize: number,
   ): Promise<{ rows: SubmissionRow[]; total: number }> {
-    const where = eq(assignmentSubmissions.submitterId, submitterId);
+    const where = and(
+      eq(assignmentSubmissions.submitterId, submitterId),
+      // 子查询过滤软删作业（无多态 FK 语义，显式排除）
+      inArray(
+        assignmentSubmissions.assignmentId,
+        db.select({ id: assignments.id }).from(assignments).where(isNull(assignments.deletedAt)),
+      ),
+    );
     const rows = await db
       .select()
       .from(assignmentSubmissions)
@@ -192,6 +211,53 @@ export class AssignmentsRepository {
     if (ids.length === 0) {
       return [];
     }
-    return db.select().from(assignments).where(inArray(assignments.id, ids));
+    return db
+      .select()
+      .from(assignments)
+      .where(and(inArray(assignments.id, ids), isNull(assignments.deletedAt)));
+  }
+
+  // ===== 作业软删除 / 回收站 =====
+
+  // 软删除：置 deleted_at（提交经 FK 保留，随作业一并隐藏、恢复一并回来）
+  async softDeleteAssignment(id: string): Promise<AssignmentRow | null> {
+    const rows = await db
+      .update(assignments)
+      .set({ deletedAt: new Date() })
+      .where(and(eq(assignments.id, id), isNull(assignments.deletedAt)))
+      .returning();
+    return rows[0] ?? null;
+  }
+
+  // 恢复用：含软删行（未删行命中时由 service 判 409）
+  async findWithDeletedById(id: string): Promise<AssignmentRow | null> {
+    const rows = await db.select().from(assignments).where(eq(assignments.id, id)).limit(1);
+    return rows[0] ?? null;
+  }
+
+  // 回收站：仅软删行，deleted_at desc
+  async listDeletedAssignments(
+    page: number,
+    pageSize: number,
+  ): Promise<{ rows: AssignmentRow[]; total: number }> {
+    const where = isNotNull(assignments.deletedAt);
+    const rows = await db
+      .select()
+      .from(assignments)
+      .where(where)
+      .orderBy(desc(assignments.deletedAt))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize);
+    const totalRows = await db.select({ count: sql<number>`count(*)::int` }).from(assignments).where(where);
+    return { rows, total: totalRows[0]?.count ?? 0 };
+  }
+
+  async restoreAssignment(id: string): Promise<AssignmentRow | null> {
+    const rows = await db
+      .update(assignments)
+      .set({ deletedAt: null })
+      .where(and(eq(assignments.id, id), isNotNull(assignments.deletedAt)))
+      .returning();
+    return rows[0] ?? null;
   }
 }

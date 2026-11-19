@@ -57,6 +57,10 @@ describe('IssuesService', () => {
     restoreReply: jest.fn(),
     listRepliesForAdmin: jest.fn(),
     listDeletedReplies: jest.fn(),
+    softDeleteIssue: jest.fn(),
+    findWithDeletedById: jest.fn(),
+    listDeletedIssues: jest.fn(),
+    restoreIssue: jest.fn(),
   };
   const usersService = {
     getPublicByIds: jest.fn(),
@@ -324,6 +328,67 @@ describe('IssuesService', () => {
       }),
     ).rejects.toThrow(ConflictException);
     expect(issuesRepository.restoreReply).toHaveBeenCalledTimes(1);
+  });
+
+  it('WHEEL 软删讨论并写 issue.delete 审计；MEMBER 无权返回 403（正常 + 失败路径）', async () => {
+    issuesRepository.findById.mockResolvedValue(issueRow());
+
+    await service.softDeleteIssue('01890a5d-ac96-7000-8000-0000000000e1', {
+      id: 'wheel-1',
+      role: Role.WHEEL,
+    });
+    expect(issuesRepository.softDeleteIssue).toHaveBeenCalledWith(
+      '01890a5d-ac96-7000-8000-0000000000e1',
+    );
+    expect(auditLogService.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'issue.delete',
+        targetType: 'ISSUE',
+        targetId: '01890a5d-ac96-7000-8000-0000000000e1',
+        detail: { title: '问题标题' },
+      }),
+    );
+
+    await expect(
+      service.softDeleteIssue('01890a5d-ac96-7000-8000-0000000000e1', {
+        id: 'member-1',
+        role: Role.MEMBER,
+      }),
+    ).rejects.toThrow(ForbiddenException);
+    expect(issuesRepository.softDeleteIssue).toHaveBeenCalledTimes(1);
+
+    // 已删/不存在（findById 已滤软删行）→ 404
+    issuesRepository.findById.mockResolvedValue(null);
+    await expect(
+      service.softDeleteIssue('01890a5d-ac96-7000-8000-0000000000e1', {
+        id: 'wheel-1',
+        role: Role.WHEEL,
+      }),
+    ).rejects.toThrow(NotFoundException);
+  });
+
+  it('恢复讨论：写 issue.restore 审计；未删返回 409（正常 + 失败路径）', async () => {
+    issuesRepository.findWithDeletedById.mockResolvedValue(issueRow({ deletedAt: now }));
+
+    await service.restoreIssue('01890a5d-ac96-7000-8000-0000000000e1', {
+      id: 'wheel-1',
+      role: Role.WHEEL,
+    });
+    expect(issuesRepository.restoreIssue).toHaveBeenCalledWith(
+      '01890a5d-ac96-7000-8000-0000000000e1',
+    );
+    expect(auditLogService.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'issue.restore', targetType: 'ISSUE' }),
+    );
+
+    issuesRepository.findWithDeletedById.mockResolvedValue(issueRow());
+    await expect(
+      service.restoreIssue('01890a5d-ac96-7000-8000-0000000000e1', {
+        id: 'wheel-1',
+        role: Role.WHEEL,
+      }),
+    ).rejects.toThrow(ConflictException);
+    expect(issuesRepository.restoreIssue).toHaveBeenCalledTimes(1);
   });
 
   it('评论管理列表：keyword 搜内容/作者，含 deletedAt', async () => {

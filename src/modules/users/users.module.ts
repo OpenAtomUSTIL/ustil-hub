@@ -8,6 +8,7 @@ import { MailModule } from '../mail/mail.module';
 import { MAIL_RECIPIENT_RESOLVER, MailRecipientResolver } from '../mail/mail.types';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { StorageModule } from '../storage/storage.module';
+import { TagsModule } from '../tags/tags.module';
 import { AdminOnlineUsersController } from './admin-online-users.controller';
 import { LastSeenInterceptor } from './last-seen.interceptor';
 import { PresenceService } from './presence.service';
@@ -20,7 +21,7 @@ import { UsersService } from './users.service';
 // 使 notifications 无需反向 import Users，避免 Users↔Notifications 模块环（实测双向 forwardRef 会解析僵死）
 @Global()
 @Module({
-  imports: [CryptoModule, StorageModule, NotificationsModule, forwardRef(() => AuditModule), CaptchaModule, MailModule],
+  imports: [CryptoModule, StorageModule, NotificationsModule, TagsModule, forwardRef(() => AuditModule), CaptchaModule, MailModule],
   controllers: [UsersController, AdminOnlineUsersController],
   providers: [
     UsersRepository,

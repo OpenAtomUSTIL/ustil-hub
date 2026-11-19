@@ -180,7 +180,7 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
   }
 
   /** 拉邮件验证码（v12.0）：走真实 /auth/email-code 链路，从发信桩捕获的 verify-code 邮件变量取码 */
-  async function emailCodeOf(email: string, purpose: 'register' | 'rebind' = 'register'): Promise<string> {
+  async function emailCodeOf(email: string, purpose: 'register' | 'rebind' | 'password' = 'register'): Promise<string> {
     await request(app.getHttpServer())
       .post('/auth/email-code')
       .send({ email, purpose, ...(await captchaOf()) })
@@ -576,12 +576,14 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
   });
 
   it('改密带正确验证码：204 并吊销全部 refresh', async () => {
+    // v12.0：改密需当前绑定邮箱的邮件验证码（purpose=password）+ 图形验证码
     await request(app.getHttpServer())
       .post('/auth/password')
       .set('Cookie', [`access_token=${tokenFor(Role.MEMBER)}`])
       .send({
         currentPassword: 'password123',
         newPassword: 'newPassword123',
+        emailCode: await emailCodeOf('a@example.com', 'password'),
         ...(await captchaOf()),
       })
       .expect(204);
@@ -600,6 +602,7 @@ describe('敏感操作验证码 + 注册流程（邀请码分支 e2e）', () => 
       .send({
         currentPassword: 'password123',
         newPassword: 'newPassword123',
+        emailCode: await emailCodeOf('a@example.com', 'password'),
         captchaId,
         captchaCode: wrongCode,
       })

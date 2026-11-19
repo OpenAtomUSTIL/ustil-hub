@@ -1,6 +1,6 @@
-export type TrashType = 'ARTICLE' | 'ANNOUNCEMENT' | 'RESOURCE' | 'COMMENT';
+export type TrashType = 'ARTICLE' | 'ANNOUNCEMENT' | 'RESOURCE' | 'ISSUE' | 'ASSIGNMENT' | 'COMMENT';
 
-export const TRASH_TYPES: TrashType[] = ['ARTICLE', 'ANNOUNCEMENT', 'RESOURCE', 'COMMENT'];
+export const TRASH_TYPES: TrashType[] = ['ARTICLE', 'ANNOUNCEMENT', 'RESOURCE', 'ISSUE', 'ASSIGNMENT', 'COMMENT'];
 
 export interface TrashItem {
   id: string;
