@@ -88,6 +88,7 @@ USTIL 官网/门户，本质是一个 **RBAC（基于角色的权限控制）系
   - `GET|PUT /users/me/notification-prefs`（登录）：`{ emailNoticeEnabled: boolean }`，通知邮件总开关（默认关）。
   - `PUT /users/me/identifier`（登录）**变更**：`type='email'` 时 `emailCode` 必填（新邮箱验证码）；手机号改为**可选附加绑定**（不再清空邮箱）。
 - 邮件链接（重置 / 退订）形态：固定域名 `https://forum.openatomustil.cn/{{path}}`（腾讯云 SES 模板审核规范：域名固定、变量只承载路径段）。
+- 站内搜索（人员）：`GET /users`（登录）`?keyword=`（必填，trim 后非空、≤100）+ 分页 → `Page<FollowUserView>`（同粉丝列表结构）；昵称/用户名模糊匹配（v10.0 口径：密文字段不参与检索），排除封禁、keyword 空白 400 不枚举用户。`GET /assignments` 列表**变更**：支持可选 `keyword`（标题/描述模糊搜，≤100）。
 
 ### 4.6 语言
 - 用户可见文案：中文。

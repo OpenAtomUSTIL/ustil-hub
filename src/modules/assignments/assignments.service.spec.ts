@@ -314,6 +314,18 @@ describe('AssignmentsService', () => {
     const result = await service.list({ page: 1, pageSize: 20 }, { id: '01890a5d-ac96-7000-8000-000000000002', role: Role.MEMBER });
     expect(result.items[0].mySubmission?.attachment.id).toBe(attachmentView.id);
   });
+  it('作业列表：keyword 透传仓库按标题/描述模糊搜', async () => {
+    assignmentsRepository.list.mockResolvedValue({ rows: [], total: 0 });
+    assignmentsRepository.findMySubmissions.mockResolvedValue([]);
+    uploadsService.getAttachmentViews.mockResolvedValue(new Map());
+    const result = await service.list(
+      { page: 1, pageSize: 20, keyword: '实验' },
+      { id: '01890a5d-ac96-7000-8000-000000000002', role: Role.MEMBER },
+    );
+    expect(assignmentsRepository.list).toHaveBeenCalledWith(1, 20, '实验');
+    expect(result.items).toEqual([]);
+    expect(result.total).toBe(0);
+  });
   it('提交引用的附件丢失时返回 404，不拼出不完整的数据', async () => {
     assignmentsRepository.list.mockResolvedValue({ rows: [assignmentRow()], total: 1 });
     assignmentsRepository.findMySubmissions.mockResolvedValue([submissionRow()]);

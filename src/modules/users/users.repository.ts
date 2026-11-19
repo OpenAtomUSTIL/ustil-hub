@@ -1,6 +1,6 @@
 import { isValidStorageKey } from '../storage/storage.types';
 import { Injectable } from '@nestjs/common';
-import { and, desc, eq, gte, ilike, inArray, isNotNull, isNull, like, lt, ne, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, ilike, inArray, isNotNull, isNull, like, lt, ne, or, sql } from 'drizzle-orm';
 import { db, Database, type DatabaseTransaction } from '../../db';
 import {
   announcements,
@@ -805,6 +805,28 @@ export class UsersRepository {
         .where(and(eq(userFollows.followerId, userId), eq(users.status, 'ACTIVE'))),
     ]);
     return { followers: followers[0]?.count ?? 0, following: following[0]?.count ?? 0 };
+  }
+
+  /** 人员搜索：ACTIVE 用户按昵称/用户名模糊匹配（v10.0 口径：密文字段不参与模糊搜），昵称升序 */
+  async searchActive(
+    keyword: string,
+    page: number,
+    pageSize: number,
+  ): Promise<{ rows: UserRow[]; total: number }> {
+    const pattern = `%${keyword}%`;
+    const where = and(
+      eq(users.status, 'ACTIVE'),
+      or(ilike(users.nickname, pattern), ilike(users.username, pattern)),
+    );
+    const rows = await db
+      .select()
+      .from(users)
+      .where(where)
+      .orderBy(asc(users.nickname), asc(users.id))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize);
+    const totalRows = await db.select({ count: sql<number>`count(*)::int` }).from(users).where(where);
+    return { rows, total: totalRows[0]?.count ?? 0 };
   }
 
   async listFollowers(

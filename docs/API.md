@@ -449,6 +449,14 @@ TagView = { id: string; name: string; count: number }
 - 说明：定时任务预生成的动画 SVG（@platane/snk 同款）；`Cache-Control: public, max-age=3600`
 - 成功：`200`，返回 `image/svg+xml`
 
+### 2.19 人员搜索 `GET /api/v1/users`
+
+- 权限：🔐 登录
+- 查询参数：`keyword`（**必填**，trim 后非空、≤100 字符）、`page`、`pageSize`
+- 说明：按**昵称 / 用户名**模糊匹配（`ILIKE %keyword%`），排除封禁用户，昵称升序；邮箱/手机号等密文字段不参与检索（v10.0 口径），空 keyword 不枚举用户
+- 成功：`200`，返回 `Page<FollowUserView>`（结构同 2.14）
+- 失败：`400`（keyword 缺失 / 全空白 / 超 100 字符）
+
 ---
 
 ---
@@ -559,7 +567,7 @@ TagView = { id: string; name: string; count: number }
 ### 4.1 作业列表 `GET /api/v1/assignments`
 
 - 权限：🔐 登录（`VISITOR` 403）
-- 查询参数：`page`、`pageSize`
+- 查询参数：`page`、`pageSize`、`keyword`（可选，标题/描述模糊搜索，≤100 字符）
 - 成功：`200`，返回 `Page<AssignmentItem>`
   ```ts
   AssignmentItem = {

@@ -23,6 +23,7 @@ import { hashPassword } from '../auth/password';
 import { TagsRepository } from '../tags/tags.repository';
 import { TagsService } from '../tags/tags.service';
 import { UpdateProfilePageDto } from './dto/update-profile-page.dto';
+import { UsersQueryDto } from './dto/users-query.dto';
 import { UsersRepository, UserRow } from './users.repository';
 import { UsersService, computeStreak } from './users.service';
 
@@ -83,6 +84,7 @@ describe('UsersService', () => {
     getFollowCounts: jest.fn(),
     listFollowers: jest.fn(),
     listFollowing: jest.fn(),
+    searchActive: jest.fn(),
     filterFollowedIds: jest.fn(),
     findByIds: jest.fn(),
     updateProfile: jest.fn(),
@@ -881,6 +883,40 @@ describe('UsersService', () => {
     expect(result.total).toBe(1);
   });
 
+  // ===== 人员搜索 =====
+
+  it('人员搜索：keyword trim 后模糊匹配，返回关注卡片视图与分页', async () => {
+    usersRepository.searchActive.mockResolvedValue({
+      rows: [row({ id: 'u-2', username: 'bob' })],
+      total: 12,
+    });
+    usersRepository.filterFollowedIds.mockResolvedValue(new Set(['u-2']));
+
+    const result = await service.search('  bob  ', memberViewer, 2, 5);
+
+    expect(usersRepository.searchActive).toHaveBeenCalledWith('bob', 2, 5);
+    expect(result.items).toEqual([
+      {
+        id: 'u-2',
+        username: 'bob',
+        nickname: '测试用户',
+        avatarUrl: null,
+        role: Role.MEMBER,
+        bio: null,
+        isSelf: false,
+        isFollowing: true,
+      },
+    ]);
+    expect(result.total).toBe(12);
+    expect(result.page).toBe(2);
+    expect(result.pageSize).toBe(5);
+  });
+
+  it('人员搜索：keyword 为空白 400，不落库查询', async () => {
+    await expect(service.search('   ', memberViewer, 1, 20)).rejects.toThrow(BadRequestException);
+    expect(usersRepository.searchActive).not.toHaveBeenCalled();
+  });
+
   // ===== 用户名（handle） =====
 
   it('改用户名：格式非法 400，重复 409，成功返回 UserSelf', async () => {
@@ -1078,6 +1114,25 @@ describe('UpdateProfilePageDto.socials 校验（v10.0 修复）', () => {
     const dto = plainToInstance(UpdateProfilePageDto, { socials: ['  a  ', '', '   ', 'b'] });
     expect(dto.socials).toEqual(['a', 'b']);
     expect(await validate(dto)).toEqual([]);
+  });
+});
+
+
+describe('UsersQueryDto 校验（人员搜索）', () => {
+  it('keyword 必填：缺省或空白均拒绝，trim 后通过', async () => {
+    const missing = await validate(plainToInstance(UsersQueryDto, {}));
+    expect(missing.length).toBeGreaterThan(0);
+    const blank = plainToInstance(UsersQueryDto, { keyword: '   ' });
+    expect(blank.keyword).toBe('');
+    expect((await validate(blank)).length).toBeGreaterThan(0);
+    const ok = plainToInstance(UsersQueryDto, { keyword: '  bob  ', page: '2', pageSize: '5' });
+    expect(ok.keyword).toBe('bob');
+    expect(await validate(ok)).toEqual([]);
+  });
+
+  it('keyword 超 100 字符拒绝', async () => {
+    const dto = plainToInstance(UsersQueryDto, { keyword: 'x'.repeat(101) });
+    expect((await validate(dto)).length).toBeGreaterThan(0);
   });
 });
 

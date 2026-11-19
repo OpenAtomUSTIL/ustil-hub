@@ -21,6 +21,7 @@ import { fileUploadInterceptor } from '../../common/interceptors/file-upload.int
 import { uuidParamPipe } from '../../common/pipes/uuid-param.pipe';
 import { UploadedFileInput } from '../storage/uploads.service';
 import { AssignmentsService } from './assignments.service';
+import { AssignmentsQueryDto } from './dto/assignments-query.dto';
 import { CreateAssignmentDto } from './dto/create-assignment.dto';
 import { SubmitSubmissionDto } from './dto/submit-submission.dto';
 import { UpdateAssignmentDto } from './dto/update-assignment.dto';
@@ -30,7 +31,7 @@ export class AssignmentsController {
   constructor(private readonly assignmentsService: AssignmentsService) {}
 
   @Get()
-  list(@Query() query: PaginationQueryDto, @CurrentUser() user: CurrentAuthUser) {
+  list(@Query() query: AssignmentsQueryDto, @CurrentUser() user: CurrentAuthUser) {
     return this.assignmentsService.list(query, user);
   }
 

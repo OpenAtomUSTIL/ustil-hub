@@ -893,6 +893,37 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /users:
+    get:
+      tags: [用户]
+      summary: 人员搜索
+      operationId: usersSearch
+      description: |
+        🔐 登录。按**昵称 / 用户名**模糊匹配（`ILIKE %keyword%`），排除封禁用户，昵称升序。
+        `keyword` 必填（trim 后非空、≤100 字符）；邮箱/手机号等密文字段不参与检索（v10.0 口径），空 keyword 不枚举用户。
+        响应结构同粉丝列表（`FollowUserPage`）。
+      parameters:
+        - name: keyword
+          in: query
+          required: true
+          description: 关键词（trim 后非空），按昵称/用户名模糊匹配
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/PageSizeParam'
+      responses:
+        '200':
+          description: 人员搜索分页
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FollowUserPage'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /users/{id}/ban:
     post:
       tags: [用户]
@@ -1659,9 +1690,11 @@ paths:
         - 状态由时间派生（服务端判定，前端倒计时仅展示）：`NOT_STARTED`（now < startAt）/ `OPEN`（startAt ≤ now ≤ deadlineAt）/ `CLOSED`（now > deadlineAt）。
         - `canSubmit` 仅 `MEMBER`/`ALUMNI` 且 state === 'OPEN' 时为 true。
         - `mySubmission` 为当前用户在该作业下的提交（无则 null）。
+        - `keyword` 可选，按标题/描述模糊搜索（≤100 字符）。
       parameters:
         - $ref: '#/components/parameters/PageParam'
         - $ref: '#/components/parameters/PageSizeParam'
+        - $ref: '#/components/parameters/KeywordParam'
       responses:
         '200':
           description: 作业分页

@@ -1000,6 +1000,21 @@ export class UsersService {
     };
   }
 
+  /** 人员搜索：昵称/用户名模糊匹配，排除封禁；返回关注卡片视图（keyword 必填，trim 后非空） */
+  async search(
+    keyword: string,
+    viewer: CurrentAuthUser,
+    page: number,
+    pageSize: number,
+  ): Promise<Page<FollowUserView>> {
+    const trimmed = keyword.trim();
+    if (!trimmed) {
+      throw new BadRequestException('keyword 不能为空');
+    }
+    const { rows, total } = await this.usersRepository.searchActive(trimmed, page, pageSize);
+    return this.toFollowUserPage(rows, viewer, total, page, pageSize);
+  }
+
   /** 粉丝列表：本人或 MEMBER+ 互访可见，VISITOR 仅看自己；排除封禁 */
   async listFollowers(
     idOrUsername: string,

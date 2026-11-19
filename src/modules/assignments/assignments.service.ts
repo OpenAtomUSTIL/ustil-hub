@@ -124,13 +124,13 @@ export class AssignmentsService {
   }
 
   async list(
-    query: { page: number; pageSize: number },
+    query: { page: number; pageSize: number; keyword?: string },
     user: CurrentAuthUser,
   ): Promise<Page<AssignmentItem>> {
     if (user.role === Role.VISITOR) {
       throw new ForbiddenException('无权访问该资源');
     }
-    const { rows, total } = await this.assignmentsRepository.list(query.page, query.pageSize);
+    const { rows, total } = await this.assignmentsRepository.list(query.page, query.pageSize, query.keyword);
     const userMap = await this.usersService.getPublicByIds([
       ...rows.map((row) => row.publisherId),
       user.id,

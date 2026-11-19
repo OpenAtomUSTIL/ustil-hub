@@ -25,6 +25,7 @@ import { UpdateNoticePrefDto } from './dto/update-notice-pref.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { UpdateProfilePageDto } from './dto/update-profile-page.dto';
 import { UpdateUsernameDto } from './dto/update-username.dto';
+import { UsersQueryDto } from './dto/users-query.dto';
 import { UsersService } from './users.service';
 
 @Controller('users')
@@ -85,6 +86,12 @@ export class UsersController {
   @Roles(Role.ADMIN)
   unban(@Param('id') id: string, @CurrentUser() user: CurrentAuthUser) {
     return this.usersService.unban(id, user);
+  }
+
+  /** 人员搜索（登录）：昵称/用户名模糊匹配，排除封禁，返回关注卡片视图 */
+  @Get()
+  search(@Query() query: UsersQueryDto, @CurrentUser() user: CurrentAuthUser) {
+    return this.usersService.search(query.keyword, user, query.page, query.pageSize);
   }
 
   /** 公开资料（脱敏）：id 或 username 寻址（URL 不暴露裸 id，旧 id 链接兼容） */

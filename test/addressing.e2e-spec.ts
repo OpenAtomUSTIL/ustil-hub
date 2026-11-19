@@ -3,6 +3,7 @@
      按标识命中→解析成 userId 过滤，未命中→空列表（过滤语义不报错）
    - 用户管理路径参数（改角色/提拔/剔除/封禁/解封）按标识命中成功，不存在→404
    - uuid 寻址回归不变；GET /auth/captcha 返回结构
+   - 人员搜索（GET /users）：keyword 必填/空白 400、命中返回 FollowUserView 分页、未登录 401
    风格同 guards/register：真实 controller + service，仓储打桩。v10.0 起解析链在
    users.service.resolveRowByIdentifier（uuid → username → email_hmac → phone_hmac），
    此处以查找列映射表（id/username/emailHmac/phoneHmac）模拟 users 表；行内 email/phone
@@ -170,6 +171,8 @@ describe('解析式寻址（v6.0 e2e）', () => {
     findByEmailHmac: jest.fn(),
     findByPhoneHmac: jest.fn(),
     findByIds: jest.fn(),
+    searchActive: jest.fn(),
+    filterFollowedIds: jest.fn(),
     updateRole: jest.fn(),
     updateStatus: jest.fn(),
     deleteById: jest.fn(),
@@ -285,6 +288,8 @@ describe('解析式寻址（v6.0 e2e）', () => {
     tagsService.getNamesByTargets.mockResolvedValue(new Map());
     tagsService.findTargetIds.mockResolvedValue([]);
     usersRepository.findByIds.mockResolvedValue([]);
+    usersRepository.searchActive.mockResolvedValue({ rows: [], total: 0 });
+    usersRepository.filterFollowedIds.mockResolvedValue(new Set());
     usersRepository.updateRole.mockResolvedValue(row({ role: Role.WHEEL }));
     usersRepository.updateStatus.mockResolvedValue(row({ status: UserStatus.BANNED }));
     usersRepository.deleteById.mockResolvedValue(row({ role: Role.VISITOR }));
@@ -499,6 +504,39 @@ describe('解析式寻址（v6.0 e2e）', () => {
     await request(app.getHttpServer()).post('/articles')
       .set('Cookie', [`access_token=${tokenFor('user-visitor')}`])
       .send({ title: '绕过页面', content: '正文', role: 'ADMIN' }).expect(403);
+  });
+
+  it('人员搜索：keyword 必填/空白 400，命中返回 FollowUserView 分页；未登录 401', async () => {
+    const member = tokenFor('user-member');
+
+    await request(app.getHttpServer()).get('/users').expect(401);
+    await request(app.getHttpServer())
+      .get('/users')
+      .set('Cookie', [`access_token=${member}`])
+      .expect(400);
+    await request(app.getHttpServer())
+      .get('/users')
+      .query({ keyword: '   ' })
+      .set('Cookie', [`access_token=${member}`])
+      .expect(400);
+
+    usersRepository.searchActive.mockResolvedValue({ rows: [uuidRow], total: 12 });
+    usersRepository.filterFollowedIds.mockResolvedValue(new Set([uuidRow.id]));
+
+    const res = await request(app.getHttpServer())
+      .get('/users')
+      .query({ keyword: 'bob', page: 2, pageSize: 5 })
+      .set('Cookie', [`access_token=${member}`])
+      .expect(200);
+
+    expect(usersRepository.searchActive).toHaveBeenCalledWith('bob', 2, 5);
+    expect(res.body.total).toBe(12);
+    expect(res.body.items[0]).toMatchObject({
+      id: UUID_TARGET_ID,
+      username: 'bob',
+      isSelf: false,
+      isFollowing: true,
+    });
   });
 
 });

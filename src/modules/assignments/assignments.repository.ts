@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { type SQL, and, desc, eq, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { db, type DatabaseTransaction } from '../../db';
 import { assignmentSubmissions, assignments } from '../../db/schema';
 import { isUuid } from '../../common/utils/identifiers';
@@ -9,9 +9,19 @@ export type SubmissionRow = typeof assignmentSubmissions.$inferSelect;
 
 @Injectable()
 export class AssignmentsRepository {
-  async list(page: number, pageSize: number): Promise<{ rows: AssignmentRow[]; total: number }> {
-    // 软删作业不展示
-    const where = isNull(assignments.deletedAt);
+  async list(
+    page: number,
+    pageSize: number,
+    keyword?: string,
+  ): Promise<{ rows: AssignmentRow[]; total: number }> {
+    // 软删作业不展示；keyword 按标题/描述模糊匹配
+    const conditions: (SQL | undefined)[] = [isNull(assignments.deletedAt)];
+    const trimmed = keyword?.trim();
+    if (trimmed) {
+      const pattern = `%${trimmed}%`;
+      conditions.push(or(ilike(assignments.title, pattern), ilike(assignments.description, pattern)));
+    }
+    const where = and(...conditions);
     const rows = await db
       .select()
       .from(assignments)
