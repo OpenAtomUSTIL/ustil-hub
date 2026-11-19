@@ -473,7 +473,7 @@ TagView = { id: string; name: string; count: number }
 ### 3.1 文章列表 `GET /api/v1/articles`
 
 - 权限：🔐 登录
-- 查询参数：`page`、`pageSize`、`keyword`（≤100）、`authorId`（uuid / 用户名 / 邮箱 / 手机号，解析不到返回空列表）、`tag`（≤30）
+- 查询参数：`page`、`pageSize`、`keyword`（≤100，标题/正文模糊匹配；或命中作者用户名/昵称，其文章一并命中）、`authorId`（uuid / 用户名 / 邮箱 / 手机号，解析不到返回空列表）、`tag`（≤30）
 - 成功：`200`，返回 `Page<ArticleListItem>`
   ```ts
   ArticleListItem = {
@@ -567,7 +567,7 @@ TagView = { id: string; name: string; count: number }
 ### 4.1 作业列表 `GET /api/v1/assignments`
 
 - 权限：🔐 登录（`VISITOR` 403）
-- 查询参数：`page`、`pageSize`、`keyword`（可选，标题/描述模糊搜索，≤100 字符）
+- 查询参数：`page`、`pageSize`、`keyword`（可选，≤100，标题/描述模糊匹配；或命中发布者用户名/昵称，其作业一并命中）
 - 成功：`200`，返回 `Page<AssignmentItem>`
   ```ts
   AssignmentItem = {
@@ -671,7 +671,7 @@ TagView = { id: string; name: string; count: number }
 ### 5.1 Issue 列表 `GET /api/v1/issues`
 
 - 权限：🔐 登录
-- 查询参数：`page`、`pageSize`、`status`（`OPEN | ANSWERED | ON_HOLD`）、`keyword`（≤100）、`tag`（≤30）、`authorId`（uuid / 用户名 / 邮箱 / 手机号，解析不到返回空列表）
+- 查询参数：`page`、`pageSize`、`status`（`OPEN | ANSWERED | ON_HOLD`）、`keyword`（≤100，标题/正文模糊匹配；或命中作者用户名/昵称，其讨论一并命中）、`tag`（≤30）、`authorId`（uuid / 用户名 / 邮箱 / 手机号，解析不到返回空列表）
 - 成功：`200`，返回 `Page<IssueListItem>`
   ```ts
   IssueListItem = {
@@ -725,7 +725,7 @@ TagView = { id: string; name: string; count: number }
 ### 6.1 公告列表 `GET /api/v1/announcements`
 
 - 权限：🔐 登录
-- 查询参数：`page`、`pageSize`、`keyword`（≤100）
+- 查询参数：`page`、`pageSize`、`keyword`（≤100，标题/内容模糊匹配；或命中作者用户名/昵称，其公告一并命中）
 - 成功：`200`，返回 `Page<AnnouncementItem>`
   ```ts
   AnnouncementItem = {
@@ -772,7 +772,7 @@ TagView = { id: string; name: string; count: number }
 ### 7.1 资源列表 `GET /api/v1/resources`
 
 - 权限：🔐 登录
-- 查询参数：`page`、`pageSize`、`category`、`keyword`（≤100）、`tag`（≤30）、`creatorId`（uuid / 用户名 / 邮箱 / 手机号，解析不到返回空列表）
+- 查询参数：`page`、`pageSize`、`category`、`keyword`（≤100，标题/描述模糊匹配；或命中创建者用户名/昵称，其资料一并命中）、`tag`（≤30）、`creatorId`（uuid / 用户名 / 邮箱 / 手机号，解析不到返回空列表）
 - 成功：`200`，返回 `Page<ResourceItem>`
   ```ts
   ResourceItem = {

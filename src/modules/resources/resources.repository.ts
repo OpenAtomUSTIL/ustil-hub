@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { type SQL, and, desc, eq, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { db } from '../../db';
+import { authorIdsMatchingKeyword } from '../../db/keyword-search';
 import { ResourceCategory, resources } from '../../db/schema';
 import { isUuid } from '../../common/utils/identifiers';
 
@@ -29,7 +30,14 @@ export class ResourcesRepository {
     const trimmed = filters.keyword?.trim();
     if (trimmed) {
       const pattern = `%${trimmed}%`;
-      conditions.push(or(ilike(resources.title, pattern), ilike(resources.description, pattern)));
+      conditions.push(
+        or(
+          ilike(resources.title, pattern),
+          ilike(resources.description, pattern),
+          // 作者扩展：搜中创建者用户名/昵称时其资料一并命中
+          inArray(resources.creatorId, authorIdsMatchingKeyword(trimmed)),
+        ),
+      );
     }
     if (filters.tagTargetIds) {
       if (filters.tagTargetIds.length === 0) {

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { type SQL, and, desc, eq, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { db, type DatabaseTransaction } from '../../db';
+import { authorIdsMatchingKeyword } from '../../db/keyword-search';
 import { assignmentSubmissions, assignments } from '../../db/schema';
 import { isUuid } from '../../common/utils/identifiers';
 
@@ -14,12 +15,19 @@ export class AssignmentsRepository {
     pageSize: number,
     keyword?: string,
   ): Promise<{ rows: AssignmentRow[]; total: number }> {
-    // 软删作业不展示；keyword 按标题/描述模糊匹配
+    // 软删作业不展示；keyword 按标题/描述模糊匹配，或命中发布者用户名/昵称
     const conditions: (SQL | undefined)[] = [isNull(assignments.deletedAt)];
     const trimmed = keyword?.trim();
     if (trimmed) {
       const pattern = `%${trimmed}%`;
-      conditions.push(or(ilike(assignments.title, pattern), ilike(assignments.description, pattern)));
+      conditions.push(
+        or(
+          ilike(assignments.title, pattern),
+          ilike(assignments.description, pattern),
+          // 作者扩展：搜中发布者用户名/昵称时其作业一并命中
+          inArray(assignments.publisherId, authorIdsMatchingKeyword(trimmed)),
+        ),
+      );
     }
     const where = and(...conditions);
     const rows = await db

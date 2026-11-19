@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { type SQL, and, desc, eq, ilike, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import { db, type DatabaseTransaction } from '../../db';
+import { authorIdsMatchingKeyword } from '../../db/keyword-search';
 import { articles } from '../../db/schema';
 import { isUuid } from '../../common/utils/identifiers';
 
@@ -29,7 +30,14 @@ export class ArticlesRepository {
     const trimmed = keyword?.trim();
     if (trimmed) {
       const pattern = `%${trimmed}%`;
-      conditions.push(or(ilike(articles.title, pattern), ilike(articles.content, pattern)));
+      conditions.push(
+        or(
+          ilike(articles.title, pattern),
+          ilike(articles.content, pattern),
+          // 作者扩展：搜中作者用户名/昵称时其文章一并命中
+          inArray(articles.authorId, authorIdsMatchingKeyword(trimmed)),
+        ),
+      );
     }
     if (authorId) {
       conditions.push(eq(articles.authorId, authorId));

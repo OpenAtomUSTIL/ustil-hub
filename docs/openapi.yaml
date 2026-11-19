@@ -1356,6 +1356,7 @@ paths:
         - 状态枚举：`PENDING`（待审）/ `PUBLISHED`（已发布）/ `REJECTED`（已拒绝）/ `HIDDEN`（已隐藏）。
         - 可见性：默认仅返回 `PUBLISHED`；按 `authorId` 过滤时，只有作者本人或 `WHEEL` / `ADMIN` 可查看该作者的全部状态。
         - `authorId` 支持 uuid / 用户名 / 邮箱 / 手机号（解析不到返回空列表，不报错）。
+        - `keyword` ≤100：标题/正文模糊匹配，或命中作者用户名/昵称（该作者文章一并命中）。
         - 返回 `readingMinutes`（阅读时长，正整数分钟）：按当前完整正文估算，中文 300 字/分钟、其他文字 200 词/分钟，混合累计向上取整，至少 1 分钟；链接、图片与 HTML 标签不计入，只读不存库。
       parameters:
         - $ref: '#/components/parameters/PageParam'
@@ -1690,7 +1691,7 @@ paths:
         - 状态由时间派生（服务端判定，前端倒计时仅展示）：`NOT_STARTED`（now < startAt）/ `OPEN`（startAt ≤ now ≤ deadlineAt）/ `CLOSED`（now > deadlineAt）。
         - `canSubmit` 仅 `MEMBER`/`ALUMNI` 且 state === 'OPEN' 时为 true。
         - `mySubmission` 为当前用户在该作业下的提交（无则 null）。
-        - `keyword` 可选，按标题/描述模糊搜索（≤100 字符）。
+        - `keyword` 可选，≤100：标题/描述模糊匹配，或命中发布者用户名/昵称（该发布者作业一并命中）。
       parameters:
         - $ref: '#/components/parameters/PageParam'
         - $ref: '#/components/parameters/PageSizeParam'
@@ -2037,6 +2038,7 @@ paths:
 
         - 状态枚举固定三项：`OPEN`（未解决）/ `ANSWERED`（已解答）/ `ON_HOLD`（搁置）。
         - `authorId` 支持 uuid / 用户名 / 邮箱 / 手机号（解析不到返回空列表，不报错）。
+        - `keyword` ≤100：标题/正文模糊匹配，或命中作者用户名/昵称（该作者讨论一并命中）。
         - 软删回复不计入 replyCount。
       parameters:
         - $ref: '#/components/parameters/PageParam'
@@ -2239,7 +2241,7 @@ paths:
       tags: [公告]
       summary: 公告列表
       operationId: announcementsList
-      description: 🔐 登录。分页返回公告列表（置顶公告含 `pinned` 标记）。keyword ≤100 字符模糊匹配标题/内容。
+      description: 🔐 登录。分页返回公告列表（置顶公告含 `pinned` 标记）。keyword ≤100 字符模糊匹配标题/内容，或命中作者用户名/昵称（该作者公告一并命中）。
       parameters:
         - $ref: '#/components/parameters/PageParam'
         - $ref: '#/components/parameters/PageSizeParam'
@@ -2384,6 +2386,7 @@ paths:
       description: |
         🔐 登录。分页返回外链资源列表。分类枚举：`GITHUB | EXAM | EBOOK | DOCUMENT | OTHER`。
         `creatorId` 支持 uuid / 用户名 / 邮箱 / 手机号（解析不到返回空列表，不报错）。
+        `keyword` ≤100：标题/描述模糊匹配，或命中创建者用户名/昵称（该创建者资料一并命中）。
       parameters:
         - $ref: '#/components/parameters/PageParam'
         - $ref: '#/components/parameters/PageSizeParam'
