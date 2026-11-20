@@ -85,7 +85,7 @@ USTIL 官网/门户，本质是一个 **RBAC（基于角色的权限控制）系
   - `POST /auth/password/forgot`（公开，204）：`{ identifier(邮箱), captchaId, captchaCode }`，恒 204 不泄露账号是否存在。
   - `POST /auth/password/reset`（公开，204）：`{ token, newPassword, newPasswordConfirm }`，一次性链接 token，成功后全会话失效；无效 400「链接无效或已过期」。
   - `POST /auth/unsubscribe`（公开，204）：`{ token }`，一键退订通知邮件。
-  - `GET|PUT /users/me/notification-prefs`（登录）：`{ emailNoticeEnabled: boolean }`，通知邮件总开关（默认关）。
+  - `GET|PUT /users/me/notification-prefs`（登录）：`{ emailNoticeEnabled: boolean }`，通知邮件总开关（**默认开**，用户可关/一键退订）；回复类邮件副本按在线状态抑制——收件人在线只留站内通知，不在线才发；公告等通用类不抑制。
   - `PUT /users/me/identifier`（登录）**变更**：`type='email'` 时 `emailCode` 必填（新邮箱验证码）；手机号改为**可选附加绑定**（不再清空邮箱）。
 - 邮件链接（重置 / 退订）形态：固定域名 `https://forum.openatomustil.cn/{{path}}`（腾讯云 SES 模板审核规范：域名固定、变量只承载路径段）。
 - 站内搜索：`GET /users`（登录）`?keyword=`（必填，trim 后非空、≤100）+ 分页 → `Page<FollowUserView>`（同粉丝列表结构）；昵称/用户名模糊匹配（v10.0 口径：密文字段不参与检索），排除封禁、keyword 空白 400 不枚举用户。**内容列表 keyword 作者扩展**（articles / issues / resources / announcements / assignments 通用，单点实现见 `src/db/keyword-search.ts`）：keyword = 「标题/正文模糊匹配 **或** 命中作者用户名/昵称」——搜中用户名/昵称时该作者的内容一并命中（同 v10.0 口径、排除封禁）。`GET /assignments` 列表**变更**：支持可选 `keyword`（≤100）。
@@ -388,6 +388,6 @@ pnpm db:migrate         # drizzle-kit migrate（部署 job / 本地手动）
 
 - 文章是否支持富文本 / Markdown 渲染（影响存储与 XSS 过滤）
 - 作业是否需要"评分"字段（当前只做提交，不做评分）
-- ~~邮件通知的发送时机与模板（后续阶段）~~ → **已拍板（2026-11-19）**：v12.0 引入事务邮件（腾讯云邮件推送 SES），模板定稿 `docs/mail-templates/`；通知邮件 = 站内通知的可选副本（默认关、用户自选、一键退订），节奏先即时（回复类带内容摘要），每日摘要后置；验证码/重置为强事务邮件。
+- ~~邮件通知的发送时机与模板（后续阶段）~~ → **已拍板（2026-11-19，2026-11-20 修订）**：v12.0 引入事务邮件（腾讯云邮件推送 SES），模板定稿 `docs/mail-templates/`；通知邮件 = 站内通知的可选副本（**默认开**、用户可关、一键退订），节奏先即时（回复类带内容摘要）；**回复类副本按在线状态抑制——收件人在线只留站内通知、不在线才发，公告等通用类不抑制**；每日摘要后置；验证码/重置为强事务邮件。
 - ~~软删除 vs 硬删除策略（当前默认硬删除，封禁用 `status` 字段）~~ → **已拍板（2026-11-11，2026-11-19 扩展至 issues / assignments）**：内容类（articles / announcements / resources / issues / assignments / issue_replies）的业务 DELETE = 软删除（`deleted_at`），后台回收站可恢复（真回滚）；用户剔除仍为硬删 FK 级联；封禁继续用 `status` 字段。
 - 前端仓库最终位置（当前前端约定见 `web/AGENTS.md`，若改为 monorepo 需 `git mv`）

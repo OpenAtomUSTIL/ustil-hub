@@ -18,6 +18,8 @@ export interface MailRecipient {
   userId: string;
   email: string;
   nickname: string;
+  /** 在线状态（最近活跃在判定窗口内）：回复类邮件副本只发不在线的收件人 */
+  online: boolean;
 }
 
 /** 跨模块收件人解析器 token（users 模块提供，notifications 模块消费；避免 service 层循环依赖） */

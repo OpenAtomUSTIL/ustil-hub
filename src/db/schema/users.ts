@@ -51,8 +51,8 @@ export const users = pgTable(
     phoneHmac: varchar('phone_hmac', { length: 64 }),
     // v12.0 事务邮件：邮箱验证时间（注册/换绑经邮件验证码验证后写入；空 = 未验证）
     emailVerifiedAt: timestamp('email_verified_at', { withTimezone: true }),
-    // v12.0 通知邮件副本总开关（默认关，用户自选；仅发给已验证邮箱）
-    emailNoticeEnabled: boolean('email_notice_enabled').notNull().default(false),
+    // 通知邮件副本总开关（默认开，用户可关/一键退订；仅发给已验证邮箱；回复类副本另按在线状态抑制）
+    emailNoticeEnabled: boolean('email_notice_enabled').notNull().default(true),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true })
       .notNull()

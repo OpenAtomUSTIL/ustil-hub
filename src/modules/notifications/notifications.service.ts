@@ -95,6 +95,10 @@ export class NotificationsService {
       for (const recipient of recipients) {
         const unsubscribePath = `unsubscribe?token=${signUnsubscribeToken(this.crypto, recipient.userId)}`;
         if (input.type === 'ISSUE_REPLY' && input.actorNickname) {
+          // 回复类副本按在线状态抑制：收件人在线时站内通知已可见，只发不在线的
+          if (recipient.online) {
+            continue;
+          }
           await this.mailService.send(recipient.email, 'notice-reply', {
             actorNickname: input.actorNickname,
             scope: '讨论',
@@ -104,6 +108,7 @@ export class NotificationsService {
             unsubscribePath,
           });
         } else {
+          // 公告等通用类：默认发送（总开关在收件人解析处已过滤）
           await this.mailService.send(recipient.email, 'notice-generic', {
             title: input.title,
             summary: input.body ?? input.title,

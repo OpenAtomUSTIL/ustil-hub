@@ -25,7 +25,7 @@ info:
     - **slug 寻址（去 id 化）**：文章 / 作业 / 公告 / 资源 / Issue 创建时由标题生成唯一 slug（URL 不暴露裸 id）。详情类读接口 `:id` 可传 uuid 或 slug（uuid 优先匹配）；写接口（编辑 / 删除 / 审核 / 状态变更 / 回复 / 提交）仅接受 uuid，传 slug 返回 400。
     - **解析式寻址（用户）**：用户读接口 `:id` 可传 uuid 或 username；用户管理类路径参数（封禁 / 解封 / 改角色 / 提前提拔 / 剔除学员）支持 uuid / username / email / phone 四种标识（uuid → username（含历史 handle）→ email → phone 依次解析），解析不到返回 404「用户不存在」。查询过滤参数（`userId` / `actorId` / `authorId` / `creatorId` 等）同样支持四种标识，解析不到返回空列表（不报错）。
     - **图形验证码**：`captchaId` + `captchaCode` 为注册 / 登录 / 改密 / 换绑 / 持码转正 / 拉取邮件验证码 / 忘记密码的必填字段；一次性消费（校验通过即作废，复用直接失败），单 `captchaId` 校验失败 3 次作废；校验失败统一 400「验证码错误或已失效」（不区分过期 / 错误 / 已消费）；获取图片按客户端 IP 限每分钟 60 次（超限 429），与登录/注册失败限流叠加。
-    - **事务邮件（v12.0）**：注册仅邮箱且须邮件验证码验证（purpose=register）；换绑邮箱须新邮箱验证码（purpose=rebind）；忘记密码走邮件一次性重置链接（30 分钟、一次性）；通知邮件受「邮件提醒」总开关 `emailNoticeEnabled` 约束（默认关），邮件内附一键退订链接（token 180 天有效）。邮件验证码与链接 token 均一次性消费。
+    - **事务邮件（v12.0）**：注册仅邮箱且须邮件验证码验证（purpose=register）；换绑邮箱须新邮箱验证码（purpose=rebind）；忘记密码走邮件一次性重置链接（30 分钟、一次性）；通知邮件受「邮件提醒」总开关 `emailNoticeEnabled` 约束（**默认开**），邮件内附一键退订链接（token 180 天有效）；回复类副本按在线状态抑制——收件人在线只留站内通知、不在线才发，公告等通用类不抑制。邮件验证码与链接 token 均一次性消费。
     - **软删除与 purge**：文章 / 公告 / 资源 / 讨论（issue）/ 作业 / 评论（讨论回复）的 DELETE 为软删（置 `deleted_at`）进回收站，可经 `POST /admin/trash/{type}/{id}/restore` 还原；软删期间列表/详情/搜索/tag 过滤/tag 计数均排除软删行（详情 404），`taggings` 与提交/回复保留（随所属讨论/作业一并隐藏、恢复一并回来），恢复后完整可见；重复恢复返回 409。剔除学员为硬删 purge（单事务）：连同名下文章/公告/资料/作业（含回收站软删行）一并硬删，级联其 issues/replies/提交，已有他人提交的作业改派给操作者（不连带删他人提交）。
     - **个人字段信封加密（v10.0）**：`email` / `phone` / `bio` / `company` / `location` / `link` / `socials` / `profileReadme` 库内为 AES-256-GCM 信封密文（配 `email_hmac` / `phone_hmac` 精确查找列）。**API 契约不变——请求/响应仍为明文**，加解密仅在服务端内部完成，本文件所有接口语义不受影响。后台用户 keyword 模糊搜只搜昵称/用户名（密文不可模糊检索）。
     - **文件上传**（头像、作业提交共用规则）：扩展名 + mime 双校验，白名单 `doc docx pdf png jpg jpeg zip`，单文件 ≤10MB（`UPLOAD_MAX_SIZE` 可配）；存储 key 为 UUID + 扩展名，文件 URL 一律经受控接口（bucket 不开放公共访问）。
@@ -3821,7 +3821,7 @@ components:
           description: data URI（可直接作 <img src>），图片不含文字答案元数据
     NoticePref:
       type: object
-      description: 通知邮件偏好（v12.0 总开关，默认 false）
+      description: 通知邮件偏好（v12.0 总开关，默认 true；回复类副本仅在收件人不在线时发送）
       required: [emailNoticeEnabled]
       properties:
         emailNoticeEnabled:

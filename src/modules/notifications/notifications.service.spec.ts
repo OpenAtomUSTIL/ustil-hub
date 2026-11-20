@@ -122,7 +122,7 @@ describe('NotificationsService', () => {
   it('邮件副本：回复类通知发 notice-reply，带退订链接', async () => {
     mailService.driver = 'smtp';
     resolveMailRecipients.mockResolvedValue([
-      { userId: 'u-1', email: 'u1@example.com', nickname: 'U1' },
+      { userId: 'u-1', email: 'u1@example.com', nickname: 'U1', online: false },
     ]);
 
     await service.notifyUsers(['u-1'], {
@@ -145,10 +145,29 @@ describe('NotificationsService', () => {
     );
   });
 
-  it('邮件副本：通用通知发 notice-generic；driver=none 不解析收件人', async () => {
+  it('邮件副本：回复类收件人在线时不发（站内通知已可见），不在线照发', async () => {
+    mailService.driver = 'smtp';
+    resolveMailRecipients.mockResolvedValue([
+      { userId: 'u-on', email: 'on@example.com', nickname: '在线', online: true },
+      { userId: 'u-off', email: 'off@example.com', nickname: '离线', online: false },
+    ]);
+
+    await service.notifyUsers(['u-on', 'u-off'], {
+      type: 'ISSUE_REPLY',
+      title: '讨论标题',
+      actorNickname: '张三',
+      excerpt: '回复摘要',
+    });
+    await flushMails();
+
+    expect(mailService.send).toHaveBeenCalledTimes(1);
+    expect(mailService.send).toHaveBeenCalledWith('off@example.com', 'notice-reply', expect.anything());
+  });
+
+  it('邮件副本：通用通知发 notice-generic（在线不抑制）；driver=none 不解析收件人', async () => {
     mailService.driver = 'api';
     resolveMailRecipients.mockResolvedValue([
-      { userId: 'u-1', email: 'u1@example.com', nickname: 'U1' },
+      { userId: 'u-1', email: 'u1@example.com', nickname: 'U1', online: true },
     ]);
 
     await service.notifyUsers(['u-1'], { type: 'ANNOUNCEMENT', title: '公告', body: '内容' });

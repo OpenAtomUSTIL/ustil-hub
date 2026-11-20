@@ -1036,8 +1036,24 @@ describe('UsersService', () => {
     const result = await service.getMailRecipients(['u-ok']);
 
     expect(usersRepository.findByIds).toHaveBeenCalledWith(['u-ok']);
-    // 邮箱在 users 模块内解密（openField），输出明文
-    expect(result).toEqual([{ userId: 'u-ok', email: 'a@example.com', nickname: '测试用户' }]);
+    // 邮箱在 users 模块内解密（openField），输出明文；无 lastSeenAt 视为不在线
+    expect(result).toEqual([{ userId: 'u-ok', email: 'a@example.com', nickname: '测试用户', online: false }]);
+  });
+
+  it('通知收件人：lastSeenAt 在窗口内标记在线，超出窗口/缺失为不在线', async () => {
+    const recent = new Date(Date.now() - 60 * 1000);
+    const stale = new Date(Date.now() - 10 * 60 * 1000);
+    usersRepository.findByIds.mockResolvedValue([
+      row({ id: 'u-online', emailNoticeEnabled: true, emailVerifiedAt: now, lastSeenAt: recent } as Partial<UserRow>),
+      row({ id: 'u-offline', emailNoticeEnabled: true, emailVerifiedAt: now, lastSeenAt: stale } as Partial<UserRow>),
+    ]);
+
+    const result = await service.getMailRecipients(['u-online', 'u-offline']);
+
+    expect(result.map((r) => ({ userId: r.userId, online: r.online }))).toEqual([
+      { userId: 'u-online', online: true },
+      { userId: 'u-offline', online: false },
+    ]);
   });
 
   it('通知收件人：封禁 / 未验证 / 开关关 / 无邮箱均不入选', async () => {

@@ -13,6 +13,7 @@ import { TagTargetType, UserStatus } from '../../db/schema';
 import { AuditLogService } from '../audit/audit-log.service';
 import { CaptchaService } from '../captcha/captcha.service';
 import { EmailCodeService } from '../mail/email-code.service';
+import { MailRecipient } from '../mail/mail.types';
 import { NotificationsService } from '../notifications/notifications.service';
 import { UploadsService, UploadedFileInput } from '../storage/uploads.service';
 import { TagsService } from '../tags/tags.service';
@@ -42,6 +43,14 @@ function isUniqueViolation(error: unknown): boolean {
 export function normalizeIdentifier(identifier: string): string {
   const trimmed = identifier.trim();
   return trimmed.includes('@') ? trimmed.toLowerCase() : trimmed;
+}
+
+// 在线判定窗口：last_seen_at 由请求拦截器约 60s 节流写入，窗口取 5 分钟容差
+const ONLINE_WINDOW_MS = 5 * 60 * 1000;
+
+/** 在线判定（回复类邮件副本抑制用）：最近活跃在窗口内视为在线 */
+export function isOnline(lastSeenAt: Date | null | undefined, now = Date.now()): boolean {
+  return lastSeenAt != null && now - lastSeenAt.getTime() < ONLINE_WINDOW_MS;
 }
 
 @Injectable()
@@ -353,21 +362,24 @@ export class UsersService {
   }
 
   /** 通知邮件收件人解析（v12.0）：仅 ACTIVE + 已验证邮箱 + 邮件提醒开启；邮箱在此解密，不出 users 模块 */
-  async getMailRecipients(
-    userIds: string[],
-  ): Promise<{ userId: string; email: string; nickname: string }[]> {
+  async getMailRecipients(userIds: string[]): Promise<MailRecipient[]> {
     if (userIds.length === 0) {
       return [];
     }
     const rows = await this.usersRepository.findByIds(userIds);
-    const result: { userId: string; email: string; nickname: string }[] = [];
+    const result: MailRecipient[] = [];
     for (const row of rows) {
       if (row.status !== UserStatus.ACTIVE || !row.emailNoticeEnabled || !row.email || !row.emailVerifiedAt) {
         continue;
       }
       const email = this.openField('email', row.email, row);
       if (email) {
-        result.push({ userId: row.id, email, nickname: row.nickname });
+        result.push({
+          userId: row.id,
+          email,
+          nickname: row.nickname,
+          online: isOnline(row.lastSeenAt),
+        });
       }
     }
     return result;
