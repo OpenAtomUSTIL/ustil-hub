@@ -633,11 +633,13 @@ export class UsersRepository {
       db.select({ count: sql<number>`count(*)::int` }).from(articles)
         .where(and(eq(articles.authorId, userId), isNull(articles.deletedAt), eq(articles.status, 'PUBLISHED'))),
       db.select({ count: sql<number>`count(*)::int` }).from(issues)
-        .where(eq(issues.authorId, userId)),
+        .where(and(eq(issues.authorId, userId), isNull(issues.deletedAt))),
       db.select({ count: sql<number>`count(*)::int` }).from(issueReplies)
-        .where(and(eq(issueReplies.authorId, userId), isNull(issueReplies.deletedAt))),
+        .innerJoin(issues, eq(issueReplies.issueId, issues.id))
+        .where(and(eq(issueReplies.authorId, userId), isNull(issueReplies.deletedAt), isNull(issues.deletedAt))),
       db.select({ count: sql<number>`count(*)::int` }).from(assignmentSubmissions)
-        .where(eq(assignmentSubmissions.submitterId, userId)),
+        .innerJoin(assignments, eq(assignmentSubmissions.assignmentId, assignments.id))
+        .where(and(eq(assignmentSubmissions.submitterId, userId), isNull(assignments.deletedAt))),
     ]);
 
     return {
@@ -663,15 +665,17 @@ export class UsersRepository {
         .groupBy(articleDay),
       db.select({ date: issueDay, count: sql<number>`count(*)::int` })
         .from(issues)
-        .where(and(eq(issues.authorId, userId), gte(issues.createdAt, since)))
+        .where(and(eq(issues.authorId, userId), isNull(issues.deletedAt), gte(issues.createdAt, since)))
         .groupBy(issueDay),
       db.select({ date: replyDay, count: sql<number>`count(*)::int` })
         .from(issueReplies)
-        .where(and(eq(issueReplies.authorId, userId), isNull(issueReplies.deletedAt), gte(issueReplies.createdAt, since)))
+        .innerJoin(issues, eq(issueReplies.issueId, issues.id))
+        .where(and(eq(issueReplies.authorId, userId), isNull(issueReplies.deletedAt), isNull(issues.deletedAt), gte(issueReplies.createdAt, since)))
         .groupBy(replyDay),
       db.select({ date: subDay, count: sql<number>`count(*)::int` })
         .from(assignmentSubmissions)
-        .where(and(eq(assignmentSubmissions.submitterId, userId), gte(assignmentSubmissions.createdAt, since)))
+        .innerJoin(assignments, eq(assignmentSubmissions.assignmentId, assignments.id))
+        .where(and(eq(assignmentSubmissions.submitterId, userId), isNull(assignments.deletedAt), gte(assignmentSubmissions.createdAt, since)))
         .groupBy(subDay),
       db.select({ date: resDay, count: sql<number>`count(*)::int` })
         .from(resources)
@@ -741,7 +745,7 @@ export class UsersRepository {
     page: number,
     pageSize: number,
   ): Promise<{ rows: ProfileReplyRow[]; total: number }> {
-    const where = and(eq(issueReplies.authorId, userId), isNull(issueReplies.deletedAt));
+    const where = and(eq(issueReplies.authorId, userId), isNull(issueReplies.deletedAt), isNull(issues.deletedAt));
     const rows = await db
       .select({
         id: issueReplies.id,
@@ -757,7 +761,8 @@ export class UsersRepository {
       .orderBy(desc(issueReplies.createdAt))
       .limit(pageSize)
       .offset((page - 1) * pageSize);
-    const totalRows = await db.select({ count: sql<number>`count(*)::int` }).from(issueReplies).where(where);
+    const totalRows = await db.select({ count: sql<number>`count(*)::int` }).from(issueReplies)
+      .innerJoin(issues, eq(issueReplies.issueId, issues.id)).where(where);
     return { rows, total: totalRows[0]?.count ?? 0 };
   }
 
